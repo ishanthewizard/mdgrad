@@ -211,11 +211,17 @@ class OdeintAdjointMethod(torch.autograd.Function):
     @staticmethod
     def backward(ctx, *grad_output):
 
-        t, flat_params, *ans = ctx.saved_tensors
-        ans = tuple(ans)
-        func, rtol, atol, method, options = ctx.func, ctx.rtol, ctx.atol, ctx.method, ctx.options
-        n_tensors = len(ans)
-        f_params = tuple(func.parameters())
+        t, flat_params, *ans = ctx.saved_tensors #save intermediate outputs 
+        ans = tuple(ans) # tuple containing all timesteps of (vel, pos, momentum)
+        func, rtol, atol, method, options = ctx.func, ctx.rtol, ctx.atol, ctx.method, ctx.options #Func calculates delta p , delta q
+        n_tensors = len(ans) # for velocity verlett, you will have 2, NH will have 3
+        f_params = tuple(func.parameters()) #These are the weights of the neural nets!!!
+
+        #summary of variables:
+        #adj_time - backwards flowing time
+        #adj_y  - adjoint sensitivities (dL/dy_t) - total derivatives
+        #adj_params - (dL/dtheta)
+        #grad_output - (partial L / partial y_t) - intermediate loss dependencies (not taking into account effect on future timesteps)
 
         # TODO: use a nn.Module and call odeint_adjoint to implement higher order derivatives.
         def augmented_dynamics(t, y_aug):
@@ -226,7 +232,11 @@ class OdeintAdjointMethod(torch.autograd.Function):
             with torch.set_grad_enabled(True):
                 t = t.to(y[0].device).detach().requires_grad_(True)
                 y = tuple(y_.detach().requires_grad_(True) for y_ in y) # get state variables 
+
+                #run one MD step to get f
                 func_eval = func(t, y)
+
+                #compute VJPs: -aT df/dt , -aT df/dz, and -aT df/dtheta
                 vjp_t, *vjp_y_and_params = torch.autograd.grad(
                     func_eval, (t,) + y + f_params,
                     tuple(-adj_y_ for adj_y_ in adj_y), allow_unused=True, retain_graph=True
@@ -242,38 +252,52 @@ class OdeintAdjointMethod(torch.autograd.Function):
 
             if len(f_params) == 0:
                 vjp_params = torch.tensor(0.).to(vjp_y[0])
+            #return time derivatives of all components of the state: [y, dL/dy_t, t, dL/dtheta]
             return (*func_eval, *vjp_y, vjp_t, vjp_params)
 
-        T = ans[0].shape[0]
+        T = ans[0].shape[0] #get total time 
         with torch.no_grad():
-            adj_y = tuple(grad_output_[-1] for grad_output_ in grad_output)
+            #initial state for adjoint sensitivity is just the final grad output (no future timesteps)
+            adj_y = tuple(grad_output_[-1] for grad_output_ in grad_output) #adjoint sensitivities (dL/dy_t) - total derivatives
+
+            #initial state of dL/dtheta is 0
             adj_params = torch.zeros_like(flat_params)
+
+            #initial adjoint time is 0
             adj_time = torch.tensor(0.).to(t)
             time_vjps = []
             for i in range(T - 1, 0, -1):
 
+                #get state at time i
                 ans_i = tuple(ans_[i] for ans_ in ans)
 
+                #get cotangent (i.e partial L / partial z_t) at time i
                 grad_output_i = tuple(grad_output_[i] for grad_output_ in grad_output)
+
+                #do a forward MD step starting from time t
                 func_i = func(t[i], ans_i)
 
-                # Compute the effect of moving the current time measurement point.
+                # Compute the effect of moving the current time measurement point.  
+                #Formula: dLd_cur_t = f * partial L / partial z_t = dz_t/d_t * partial L / partial z_t
                 dLd_cur_t = sum(
                     torch.dot(func_i_.reshape(-1), grad_output_i_.reshape(-1)).reshape(1)
                     for func_i_, grad_output_i_ in zip(func_i, grad_output_i)
                 )
+                #not sure what's happening here - is this a step size for the time?
                 adj_time = adj_time - dLd_cur_t
                 time_vjps.append(dLd_cur_t)
 
                 # Run the augmented system backwards in time.
                 if adj_params.numel() == 0:
                     adj_params = torch.tensor(0.).to(adj_y[0])
+                #define augmented state: (z, dL/dz_t, tau, dL/dtheta)
                 aug_y0 = (*ans_i, *adj_y, adj_time, adj_params)
+                #run augmented system backwards for one step
                 aug_ans = odeint(
                     augmented_dynamics, aug_y0,
                     torch.tensor([t[i], t[i - 1]]), rtol=rtol, atol=atol, method=method, options=options
                 )
-
+            
                 # Unpack aug_ans.
                 adj_y = aug_ans[n_tensors:2 * n_tensors]
                 adj_time = aug_ans[2 * n_tensors]
@@ -283,13 +307,15 @@ class OdeintAdjointMethod(torch.autograd.Function):
                 if len(adj_time) > 0: adj_time = adj_time[1]
                 if len(adj_params) > 0: adj_params = adj_params[1]
 
+                #adjust the adjoint in the direction of partial L/partial z_{i-1}
                 adj_y = tuple(adj_y_ + grad_output_[i - 1] for adj_y_, grad_output_ in zip(adj_y, grad_output))
 
                 del aug_y0, aug_ans
 
             time_vjps.append(adj_time)
             time_vjps = torch.cat(time_vjps[::-1])
-
+            #return gradients for all arguments:
+            #y0, func, t, flat_params, rtol, atol, method, options
             return (*adj_y, None, time_vjps, adj_params, None, None, None, None, None)
 
 

@@ -2,6 +2,7 @@ import torch
 from nff.utils.scatter import compute_grad
 import numpy as np 
 import math 
+import pdb
 from ase import units
 from torchmd.sovlers import odeint_adjoint, odeint
 from ase.geometry import wrap_positions
@@ -71,12 +72,13 @@ class Simulations():
             raise ValueError("No log available")
         
     def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1):
-
+        # steps is the number of timesteps, frequency is related to how much you log
         if self.log['positions'] == []:
             states = self.integrator.get_inital_states(self.wrap)
         else:
             states = self.get_check_point()
 
+        pdb.set_trace()
         sim_epochs = int(steps//frequency)
         t = torch.Tensor([dt * i for i in range(frequency)]).to(self.device)
 
@@ -87,6 +89,10 @@ class Simulations():
             else:
                 for var in states:
                     var.requires_grad = True 
+                # The line below is where everything happens. The integrator is the one of the neural nets below 
+                # responsible for calculating dgmma/dt (f), and the solver (indicated to 
+                # ode int by the solvemethod string) applies this derivative in the forward step
+                # using something like runge kutta or velocity verlett.
                 trajs = odeint(self.integrator, tuple(states), t, method=self.solvemethod)
             self.update_log(trajs)
             self.update_states()

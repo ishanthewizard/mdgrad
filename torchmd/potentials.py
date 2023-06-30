@@ -396,3 +396,7 @@ def test(pair_dis):
     linspace = torch.linspace(0, 2.5, 100)
     pair = MLP(**MLPPARAMS).to(3)
     pair(pair_dis[..., None])
+
+
+#TODO: you need to add schnet as well as a prior potential
+

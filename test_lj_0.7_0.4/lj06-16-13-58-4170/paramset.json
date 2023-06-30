@@ -1,0 +1,28 @@
+{
+    "dt": 0.005,
+    "size": 4,
+    "n_epochs": 1000,
+    "n_sim": 200,
+    "data": [
+        "lj_0.7_0.4"
+    ],
+    "val": null,
+    "t_range": 50,
+    "skip": 5,
+    "cutoff": 2.5,
+    "nbr_list_device": "cpu",
+    "topology_update_freq": 1,
+    "epsilon": 0.4,
+    "gaussian_width": 0.1,
+    "n_layers": 3,
+    "n_width": 128,
+    "nbins": 100,
+    "nonlinear": "ELU",
+    "opt_freq": 120,
+    "power": 10,
+    "rdf_weight": 0.95,
+    "train_vacf": "True",
+    "lr": 0.002,
+    "sigma": 0.9,
+    "vacf_weight": 0.0
+}

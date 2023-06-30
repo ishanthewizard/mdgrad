@@ -1,24 +1,34 @@
-#from settings import *
+import datetime
+import itertools
+from collections import defaultdict
+import os
+from pathlib import Path
+
+import json
+import torch
+import numpy as np
+
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+from ase.neighborlist import natural_cutoffs, NeighborList
+from ase.io import read, Trajectory
 import sys
-
-import torchmd
-from scripts import * 
+from torchmd.observable import *
 from nff.train import get_model
+import torchmd
 from torchmd.system import GNNPotentials, PairPotentials, System, Stack
-from torchmd.md import Simulations
+from torchmd.md import NoseHooverChain, Simulations
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-from ase import units
+from ase import units, Atoms
+from lmdb_dataset import LmdbDataset, data_list_collater
 
 
-width_dict = {'tiny': 64,
-               'low': 128,
-               'mid': 256, 
-               'high': 512}
-
-gaussian_dict = {'tiny': 16,
-               'low': 32,
-               'mid': 64, 
-               'high': 128}
+# optional. nglview for visualization
+# import nglview as nv
+molecule = 'aspirin'
+size = '1k'
+name = 'md17'
 
 def get_exp_rdf(data, nbins, r_range, obs):
     # load RDF data 
@@ -54,7 +64,78 @@ def plot_rdfs(bins, target_g, simulated_g, fname, path):
     plt.show()
     plt.close()
 
+def get_hr(traj, bins):
+    """
+    compute h(r) the RDF??? for MD17 simulations.
+    traj: T x N_atoms x 3
+    """
+    pdist = torch.cdist(traj, traj).flatten()
+    hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
+    return hist
+
+def find_hr_from_file(molecule: str, size: str):
+    #RDF plotting parameters
+    xlim = 6
+    n_bins = 500
+    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
+
+    # load ground truth data
+    DATAPATH = f'md17/{molecule}/{size}/test/nequip_npz.npz'
+    gt_data = np.load(DATAPATH)
+    gt_traj = torch.FloatTensor(gt_data.f.R)
+    gt_atomicnums = torch.FloatTensor(gt_data.f.z)
+    hist_gt = get_hr(gt_traj, bins)
+    return hist_gt
+    # compute h(r) for simulated trajectory
+
+def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode="policy", from_pretrained=True):
+    ckpt_and_config_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
+    schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
+    if num_interactions: #manual override
+        schnet_config["model_attributes"]["num_interactions"] = num_interactions
+    keep = list(schnet_config["model_attributes"].keys())[0:5]
+    args = {k: schnet_config["model_attributes"][k] for k in keep}
+    model = SchNet(**args).to(device)
+    if from_pretrained:
+        #get checkpoint
+        ckpt_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
+        checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_path, map_location = torch.device("cpu"))['state_dict'].items()}
+        #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
+        try:
+            new_dict = {k[7:]: v for k, v in checkpoint.items()}
+            model.load_state_dict(new_dict)
+        except:
+            model.load_state_dict(checkpoint)
+    return model, schnet_config["model_attributes"]
+
+def data_to_atoms(data):
+    numbers = data.atomic_numbers
+    positions = data.pos
+    cell = data.cell.squeeze()
+    atoms = Atoms(numbers=numbers, 
+                  positions=positions.cpu().detach().numpy(), 
+                  cell=cell.cpu().detach().numpy(),
+                  pbc=[True, True, True])
+    return atoms
+
+
+#Get the global loss that you'll be training on
+rdf_observable = find_hr_from_file("aspirin", "1k")
+
+# 
 def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
+    n_epochs = 1000 
+    n_sim = 200 
+    size = 4
+    cutoff = 2.5
+    t_range = 50 # time range???
+
+    nbins = 500 # bins for the rdf histogram
+    tau = 120 # ??? what is this
+
+    rdf_start = .75
+    skip = 1
+
     # parse params 
     data = sys_params['data']
     size = sys_params['size']
@@ -72,47 +153,30 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
     model_path = '{}/{}'.format(project_name, suggestion_id)
     os.makedirs(model_path)
 
-    tau = 100
+    tau = assignments['opt_freq'] 
     print("Training for {} epochs".format(n_epochs))
 
-    # Define prior potential 
-    lj_params = {'epsilon': assignments['epsilon'], 
-                 'sigma': assignments['sigma'], 
-                 'power': 12}
+    # initialize states with ASE # TODO: instead, load in your model DONE
+    #initialize datasets
+    train_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], name, molecule, size, 'train')})
+    valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], name, molecule, size, 'val')})
 
-    gnn_params = {
-        'n_atom_basis': width_dict[assignments['n_atom_basis']],
-        'n_filters': width_dict[assignments['n_filters']],
-        #'n_gaussians': gaussian_dict[assignments['n_gaussians']],
-        'n_gaussians': int(assignments['cutoff']//assignments['gaussian_width']),
-        'n_convolutions': assignments['n_convolutions'],
-        'cutoff': assignments['cutoff'],
-        'trainable_gauss': False
-    }
-
-    # initialize states with ASE 
-    atoms = FaceCenteredCubic(directions=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                              symbol='H',
-                              size=(size, size, size),
-                              latticeconstant= L,
-                              pbc=True)
+    #get first configuration from dataset
+    init_data = train_dataset.__getitem__(0)
+    n_atoms = init_data['pos'].shape[0]
+    atoms = data_to_atoms(init_data)
     system = System(atoms, device=device)
-    system.set_temperature(298.0 * ase.units.kB)
-
+    system.set_temperature(298.0 * units.kB)
     print(system.get_temperature())
 
     # Initialize potentials 
-    model = get_model(gnn_params)
+    # TODO: replace with schnet DONE
+    #load in schnet, train using simulate which calls odeintadjoint
+    model, config = load_schnet_model(device="gpu")
     GNN = GNNPotentials(model, system.get_batch(), system.get_cell_len(), cutoff=cutoff, device=system.device)
-    pair = PairPotentials(ExcludedVolume, lj_params,
-                    cell=torch.Tensor(system.get_cell_len()), 
-                    device=device,
-                    cutoff=8.0,
-                    ).to(device)
+    model = GNN
 
-    model = Stack({'gnn': GNN, 'pair': pair})
-
-    # define the equation of motion to propagate 
+    # define the equation of motion to propagate (the Integrater)
     diffeq = NoseHooverChain(model, 
             system,
             Q=50.0, 
@@ -126,11 +190,12 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
 
     # initialize observable function 
     obs = rdf(system, nbins, (start, end) )
-    vacf_obs = vacf(system, t_range=int(tau//2))
 
     xnew = np.linspace(start, end, nbins)
-    # get experimental rdf 
-    count_obs, g_obs = get_exp_rdf(data, nbins, (start, end), obs)
+    # get experimental rdf TODO: replace 
+    g_obs = find_hr_from_file("aspirin", "1k")
+    # count_obs, g_obs = get_exp_rdf(data, nbins, (start, end), obs)
+
     # define optimizer 
     optimizer = torch.optim.Adam(list(diffeq.parameters() ), lr=assignments['lr'])
 
@@ -141,25 +206,15 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
     solver_method = 'NH_verlet'
 
     for i in range(0, n_epochs):
-        
         current_time = datetime.now() 
-        trajs = sim.simulate(steps=tau, frequency=tau)
+        trajs = sim.simulate(steps=tau, frequency=int(tau//2))
         v_t, q_t, pv_t = trajs 
-        #import ipdb; ipdb.set_trace()
-        # vacf_sim = vacf_obs(v_t.detach())
-        # plt.plot(vacf_sim.detach().cpu().numpy())
-        # plt.savefig(model_path + '/{}.jpg'.format("vacf"), bbox_inches='tight')
-        # plt.show()
-        # plt.close()
-
         _, bins, g = obs(q_t)
-        
         if i % 25 == 0:
            plot_rdfs(xnew, g_obs, g, i, model_path)
-        
         # this shoud be wrapped in some way 
         loss_js = JS_rdf(g_obs, g)
-        loss = assignments['mse_weight'] * (g- g_obs).pow(2).sum()
+        loss = (g- g_obs).pow(2).sum()
                 
         print(loss_js.item(), loss.item())
         loss.backward()

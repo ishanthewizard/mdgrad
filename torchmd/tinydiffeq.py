@@ -73,6 +73,8 @@ class FixedGridODESolver(object):
                 solution.append(self._linear_interp(t0, t1, y0, y1, t[j]))
                 j += 1
 
+        # import pdb;
+        # pdb.set_trace()
         return tuple(map(torch.stack, tuple(zip(*solution))))
 
     def _linear_interp(self, t0, t1, y0, y1, t):

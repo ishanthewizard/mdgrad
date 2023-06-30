@@ -20,6 +20,7 @@ from data import pair_data_dict, exp_rdf_data_dict
 from plot import *
 import matplotlib.pyplot as plt
 
+import pdb
 import json 
 import matplotlib
 
@@ -295,7 +296,7 @@ def plot_pair(fn, path, model, prior, device, end=2.5, target_pot=None):
     return u_fit
 
 def fit_lj(assignments, suggestion_id, device, sys_params, project_name):
-
+    # pdb.set_trace()
     n_epochs = sys_params['n_epochs'] 
     n_sim = sys_params['n_sim'] 
     size = sys_params['size']
@@ -389,6 +390,7 @@ def fit_lj(assignments, suggestion_id, device, sys_params, project_name):
 
     for i, data_str in enumerate(data_str_list + val_str_list):
         rdf_start = pair_data_dict[data_str].get("start", 0.75)
+        # pdb.set_trace()
         x, rdf_target, rdf_obs, vacf_target, vacf_obs = get_observer(system_list[i],
                                                                      data_str, 
                                                                      nbins, 
@@ -436,6 +438,7 @@ def fit_lj(assignments, suggestion_id, device, sys_params, project_name):
             # get dt 
             dt = pair_data_dict[data_str].get("dt", 0.01)
 
+            # pdb.set_trace()
             # Simulate 
             v_t, q_t, pv_t = sim.simulate(steps=tau, frequency=tau, dt=dt)
 
@@ -509,6 +512,7 @@ def fit_lj(assignments, suggestion_id, device, sys_params, project_name):
         else:
             loss = assignments['rdf_weight'] * loss_rdf
 
+        pdb.set_trace()
         loss.backward()
 
         optimizer.step()

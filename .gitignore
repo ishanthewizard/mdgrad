@@ -1,3 +1,5 @@
 *.pdb
 *.xyz
 *.pyc
+md17-aspirin_1k_schnet/
+md17/
