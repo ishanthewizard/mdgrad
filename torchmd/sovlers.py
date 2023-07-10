@@ -11,6 +11,7 @@ from torch import nn
 class NHVerlet(FixedGridODESolver):
 
     def step_func(self, func, t, dt, y):
+        import pdb; pdb.set_trace()
         return NHverlet_update(func, t, dt, y)
 
 class Verlet(FixedGridODESolver):

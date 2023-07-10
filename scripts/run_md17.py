@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import itertools
 from collections import defaultdict
 import os
@@ -62,9 +62,11 @@ def find_hr_from_file(molecule: str, size: str):
     return hist_gt
     # compute h(r) for simulated trajectory
 
-def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode="policy", from_pretrained=True):
 
-    ckpt_and_config_path = os.path.join(path, "checkpoints", "checkpoint40.pt")
+def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True):
+    
+    cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
+    ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
     schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
     if num_interactions: #manual override
         schnet_config["model_attributes"]["num_interactions"] = num_interactions
@@ -74,8 +76,8 @@ def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode
 
     if from_pretrained:
         #get checkpoint
-        ckpt_path = ckpt_and_config_path
-        checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_path, map_location = torch.device("cpu"))['state_dict'].items()}
+        print(f'Loading model weights from {ckpt_and_config_path}')
+        checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_and_config_path, map_location = torch.device("cpu"))['state_dict'].items()}
         #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
         try:
             new_dict = {k[7:]: v for k, v in checkpoint.items()}
@@ -85,7 +87,6 @@ def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode
 
         
     return model, schnet_config["model_attributes"] 
-
 
 def data_to_atoms(data):
     numbers = data.atomic_numbers
@@ -136,14 +137,18 @@ def fit_rdf(suggestion_id, device, project_name):
     
 
     try:
-        device = torch.device(torch.cuda.current_device())
+        device2 = torch.device(torch.cuda.current_device())
     except:
-        device = "cpu"
-    pdb.set_trace()
-    model, config = load_schnet_model(path= SCHNET_PATH , device=torch.device(device))
+        device2 = "cpu"
+
+    
+    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='40', device=torch.device(device2))
     batch = system.get_batch()
     cell_len = system.get_cell_len()
-    GNN = GNNPotentials(model, batch, cell_len, cutoff=cutoff, device=system.device)
+
+
+    atomic_nums = torch.Tensor(atoms.get_atomic_numbers()).to(torch.long).to(device2)
+    GNN = GNNPotentials(system, model, cutoff, atomic_nums )
     model = GNN
 
     # define the equation of motion to propagate (the Integrater)
@@ -152,7 +157,7 @@ def fit_rdf(suggestion_id, device, project_name):
             Q=50.0, 
             T=298.0 * units.kB,
             num_chains=5, 
-            adjoint=False).to(device)
+            adjoint=True).to(device)
 
     # define simulator with 
     sim = Simulations(system, diffeq)
@@ -171,6 +176,7 @@ def fit_rdf(suggestion_id, device, project_name):
     loss_log = []
     loss_js_log = []
     traj = []
+
 
     for i in range(0, n_epochs):
         current_time = datetime.now() 
@@ -253,4 +259,4 @@ def save_traj(system, traj, fname, skip=10):
             atoms_list.append(frame)
     write(fname, atoms_list) 
 
-fit_rdf("123", "gpu", "test_proj")
+fit_rdf("123", "cuda", "test_proj")

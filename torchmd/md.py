@@ -78,7 +78,6 @@ class Simulations():
         else:
             states = self.get_check_point()
 
-        pdb.set_trace()
         sim_epochs = int(steps//frequency)
         t = torch.Tensor([dt * i for i in range(frequency)]).to(self.device)
 
@@ -215,7 +214,7 @@ class NoseHooverChain(torch.nn.Module):
         
     def forward(self, t, state):
         with torch.set_grad_enabled(True):        
-            
+            pdb.set_trace()
             v = state[0]
             q = state[1]
             p_v = state[2]

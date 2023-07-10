@@ -94,7 +94,7 @@ class GNNPotentials(GeneralInteraction):
         inputs (TYPE): Description
     """
     
-    def __init__(self, system, gnn, cutoff, ex_pairs=None):
+    def __init__(self, system, gnn, cutoff, atomic_nums, ex_pairs=None):
         """Summary
         
         Args:
@@ -103,7 +103,6 @@ class GNNPotentials(GeneralInteraction):
             cutoff (TYPE): Description
             ex_pairs (None, optional): Description
         """
-        import pdb;pdb.set_trace()
         super().__init__(system)
         self.gnn = gnn
         self.cutoff = cutoff
@@ -111,6 +110,7 @@ class GNNPotentials(GeneralInteraction):
         self.inputs = batch_to(self.system.get_batch(), self.device)
         self.ex_pairs = ex_pairs
         self.to(self.device)
+        self.atomic_numbers = atomic_nums
 
         self._reset_topology(torch.Tensor(system.get_positions()).to(system.device))
 
@@ -133,8 +133,9 @@ class GNNPotentials(GeneralInteraction):
             TYPE: Description
         """
         #self._reset_topology(xyz)
-        results = self.gnn(self.inputs, xyz)
-        return results['energy']
+        import pdb; pdb.set_trace()
+        results = self.gnn(self.atomic_numbers, xyz)
+        return results
 
 
 class TPairPotentials(GeneralInteraction):

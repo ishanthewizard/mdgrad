@@ -103,7 +103,6 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
 
     # Initialize potentials 
     model = get_model(gnn_params)
-    import pdb; pdb.set_trace();
     GNN = GNNPotentials(model, system.get_batch(), system.get_cell_len(), cutoff=cutoff, device=system.device)
     pair = PairPotentials(ExcludedVolume, lj_params,
                     cell=torch.Tensor(system.get_cell_len()), 
@@ -146,7 +145,6 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
         current_time = datetime.now() 
         trajs = sim.simulate(steps=tau, frequency=int(tau//2))
         v_t, q_t, pv_t = trajs 
-        #import ipdb; ipdb.set_trace()
         # vacf_sim = vacf_obs(v_t.detach())
         # plt.plot(vacf_sim.detach().cpu().numpy())
         # plt.savefig(model_path + '/{}.jpg'.format("vacf"), bbox_inches='tight')
