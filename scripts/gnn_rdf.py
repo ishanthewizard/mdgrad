@@ -72,7 +72,7 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
     model_path = '{}/{}'.format(project_name, suggestion_id)
     os.makedirs(model_path)
 
-    tau = 100
+    tau = assignments['opt_freq'] 
     print("Training for {} epochs".format(n_epochs))
 
     # Define prior potential 
@@ -143,7 +143,7 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
     for i in range(0, n_epochs):
         
         current_time = datetime.now() 
-        trajs = sim.simulate(steps=tau, frequency=tau)
+        trajs = sim.simulate(steps=tau, frequency=int(tau//2))
         v_t, q_t, pv_t = trajs 
         #import ipdb; ipdb.set_trace()
         # vacf_sim = vacf_obs(v_t.detach())

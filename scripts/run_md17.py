@@ -4,55 +4,26 @@ from collections import defaultdict
 import os
 from pathlib import Path
 
+
 import json
+import shutil
+from nff.nn.models.schnet import SchNet
 import torch
 import numpy as np
-
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-
-from ase.neighborlist import natural_cutoffs, NeighborList
-from ase.io import read, Trajectory
-import sys
+from ase.io import read, Trajectory, write
 from torchmd.observable import *
-from nff.train import get_model
-import torchmd
-from torchmd.system import GNNPotentials, PairPotentials, System, Stack
+from torchmd.system import  System
+from interface import GNNPotentials
 from torchmd.md import NoseHooverChain, Simulations
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase import units, Atoms
-from lmdb_dataset import LmdbDataset, data_list_collater
-
+from lmdb_dataset import LmdbDataset
 
 # optional. nglview for visualization
 # import nglview as nv
-molecule = 'aspirin'
-size = '1k'
-name = 'md17'
-
-def get_exp_rdf(data, nbins, r_range, obs):
-    # load RDF data 
-    f = interpolate.interp1d(data[:,0], data[:,1])
-    start = r_range[0]
-    end = r_range[1]
-    xnew = np.linspace(start, end, nbins)
-
-    # make sure the rdf data is normalized
-    V = (4/3)* np.pi * (end ** 3 - start ** 3)
-    g_obs = torch.Tensor(f(xnew)).to(obs.device)
-    g_obs_norm = ((g_obs.detach() * obs.vol_bins).sum()).item()
-    g_obs = g_obs * (V/g_obs_norm)
-    count_obs = g_obs * obs.vol_bins / V
-
-    return count_obs, g_obs
-
-def JS_rdf(g_obs, g):
-    e0 = 1e-4
-    g_m = 0.5 * (g_obs + g)
-    loss_js =  ( -(g_obs + e0 ) * (torch.log(g_m + e0 ) - torch.log(g_obs +  e0)) ).sum()
-    loss_js += ( -(g + e0 ) * (torch.log(g_m + e0 ) - torch.log(g + e0) ) ).sum()
-
-    return loss_js
+MOLECULE = 'aspirin'
+SIZE = '1k'
+NAME = 'md17'
 
 def plot_rdfs(bins, target_g, simulated_g, fname, path):
     plt.title("epoch {}".format(fname))
@@ -119,51 +90,34 @@ def data_to_atoms(data):
     return atoms
 
 
-#Get the global loss that you'll be training on
-rdf_observable = find_hr_from_file("aspirin", "1k")
 
-# 
-def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
-    n_epochs = 1000 
-    n_sim = 200 
-    size = 4
-    cutoff = 2.5
-    t_range = 50 # time range???
-
+def fit_rdf(suggestion_id, device, project_name):
+    n_epochs = 1000  # number of epochs to train for
+    cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 120 # ??? what is this
-
-    rdf_start = .75
-    skip = 1
-
-    # parse params 
-    data = sys_params['data']
-    size = sys_params['size']
-    L = sys_params['L']
-    end = sys_params['end']
-    tmax = sys_params['tmax']
-    dt = sys_params['dt']
-    n_epochs = sys_params['n_epochs'] 
-    n_sim = sys_params['n_sim'] 
-    cutoff = assignments['cutoff']
-
-    nbins = assignments['nbins']
-    print(assignments)
+    tau = 120 # ??? this is the number of timesteps, idk why it's called tau
+    start = 0 # start of rdf range
+    end = 6 # end of rdf range
+    lr_initial = .001 # learning rate passed to optim
 
     model_path = '{}/{}'.format(project_name, suggestion_id)
+    # Remove the directory if it already exists
+    if os.path.exists(model_path):
+        shutil.rmtree(model_path)
+
+    # Create the new directory
     os.makedirs(model_path)
 
-    tau = assignments['opt_freq'] 
     print("Training for {} epochs".format(n_epochs))
 
     # initialize states with ASE # TODO: instead, load in your model DONE
     #initialize datasets
-    train_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], name, molecule, size, 'train')})
-    valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], name, molecule, size, 'val')})
+    import pdb; pdb.set_trace()
+    train_dataset = LmdbDataset({'src': os.path.join(NAME, MOLECULE, SIZE, 'train')})
+    # valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], NAME, MOLECULE, SIZE, 'val')})
 
     #get first configuration from dataset
     init_data = train_dataset.__getitem__(0)
-    n_atoms = init_data['pos'].shape[0]
     atoms = data_to_atoms(init_data)
     system = System(atoms, device=device)
     system.set_temperature(298.0 * units.kB)
@@ -186,24 +140,21 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
 
     # define simulator with 
     sim = Simulations(system, diffeq)
-    start = 2.0
 
     # initialize observable function 
-    obs = rdf(system, nbins, (start, end) )
+    obs = rdf(system, nbins, (start, end) ) # initialize rdf function for the system
 
-    xnew = np.linspace(start, end, nbins)
+    xnew = np.linspace(start, end, nbins) # probably just the rdf bins
     # get experimental rdf TODO: replace 
     g_obs = find_hr_from_file("aspirin", "1k")
     # count_obs, g_obs = get_exp_rdf(data, nbins, (start, end), obs)
 
     # define optimizer 
-    optimizer = torch.optim.Adam(list(diffeq.parameters() ), lr=assignments['lr'])
+    optimizer = torch.optim.Adam(list(diffeq.parameters() ), lr=lr_initial)
 
     loss_log = []
     loss_js_log = []
     traj = []
-
-    solver_method = 'NH_verlet'
 
     for i in range(0, n_epochs):
         current_time = datetime.now() 
@@ -213,7 +164,6 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
         if i % 25 == 0:
            plot_rdfs(xnew, g_obs, g, i, model_path)
         # this shoud be wrapped in some way 
-        loss_js = JS_rdf(g_obs, g)
         loss = (g- g_obs).pow(2).sum()
                 
         print(loss_js.item(), loss.item())
@@ -248,36 +198,36 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
     train_traj = [var[1] for var in diffeq.traj]
     save_traj(system, train_traj, model_path + '/train.xyz', skip=10)
 
-    # Inference 
-    sim_trajs = []
-    for i in range(n_sim):
-        _, q_t, _ = sim.simulate(steps=100, frequency=25)
-        sim_trajs.append(q_t[-1].detach().cpu().numpy())
+#     # Inference 
+#     sim_trajs = []
+#     for i in range(n_sim):
+#         _, q_t, _ = sim.simulate(steps=100, frequency=25)
+#         sim_trajs.append(q_t[-1].detach().cpu().numpy())
 
-    sim_trajs = torch.Tensor(np.array(sim_trajs)).to(device)
-    sim_trajs.requires_grad = False # no gradient required 
+#     sim_trajs = torch.Tensor(np.array(sim_trajs)).to(device)
+#     sim_trajs.requires_grad = False # no gradient required 
 
-    # compute equilibrate rdf with finer bins 
-    test_nbins = 128
-    obs = rdf(system, test_nbins,  (start, end))
-    xnew = np.linspace(start, end, test_nbins)
-    count_obs, g_obs = get_exp_rdf(data, test_nbins, (start, end), obs) # recompute exp. rdf
-    _, bins, g = obs(sim_trajs) # compute simulated rdf
+#     # compute equilibrate rdf with finer bins 
+#     test_nbins = 128
+#     obs = rdf(system, test_nbins,  (start, end))
+#     xnew = np.linspace(start, end, test_nbins)
+#     count_obs, g_obs = get_exp_rdf(data, test_nbins, (start, end), obs) # recompute exp. rdf
+#     _, bins, g = obs(sim_trajs) # compute simulated rdf
 
-    # compute equilibrated rdf 
-    loss_js = JS_rdf(g_obs, g)
+#     # compute equilibrated rdf 
+#     loss_js = JS_rdf(g_obs, g)
 
-    save_traj(system, sim_trajs.detach().cpu().numpy(),  
-        model_path + '/sim.xyz', skip=1)
+#     save_traj(system, sim_trajs.detach().cpu().numpy(),  
+#         model_path + '/sim.xyz', skip=1)
 
-    plot_rdfs(xnew, g_obs, g, "final", model_path)
+#     plot_rdfs(xnew, g_obs, g, "final", model_path)
 
-    np.savetxt(model_path + '/loss.csv', np.array(loss_log))
+#     np.savetxt(model_path + '/loss.csv', np.array(loss_log))
 
-    if torch.isnan(loss_js):
-        return np.array(loss_log[-16:-1]).mean()
-    else:
-        return loss_js.item()
+#     if torch.isnan(loss_js):
+#         return np.array(loss_log[-16:-1]).mean()
+#     else:
+#         return loss_js.item()
 
 def save_traj(system, traj, fname, skip=10):
     atoms_list = []
@@ -285,4 +235,6 @@ def save_traj(system, traj, fname, skip=10):
         if i % skip == 0: 
             frame = Atoms(positions=frame, numbers=system.get_atomic_numbers())
             atoms_list.append(frame)
-    ase.io.write(fname, atoms_list) 
+    write(fname, atoms_list) 
+
+fit_rdf("123", "gpu", "test_proj")
