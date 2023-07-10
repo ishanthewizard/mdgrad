@@ -103,6 +103,7 @@ def fit_rdf(assignments, i, suggestion_id, device, sys_params, project_name):
 
     # Initialize potentials 
     model = get_model(gnn_params)
+    import pdb; pdb.set_trace();
     GNN = GNNPotentials(model, system.get_batch(), system.get_cell_len(), cutoff=cutoff, device=system.device)
     pair = PairPotentials(ExcludedVolume, lj_params,
                     cell=torch.Tensor(system.get_cell_len()), 

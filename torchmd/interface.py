@@ -103,6 +103,7 @@ class GNNPotentials(GeneralInteraction):
             cutoff (TYPE): Description
             ex_pairs (None, optional): Description
         """
+        import pdb;pdb.set_trace()
         super().__init__(system)
         self.gnn = gnn
         self.cutoff = cutoff

@@ -6,8 +6,9 @@ from pathlib import Path
 
 
 import json
+import pdb;
 import shutil
-from nff.nn.models.schnet import SchNet
+from torch_geometric.nn import SchNet
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,6 +25,8 @@ from lmdb_dataset import LmdbDataset
 MOLECULE = 'aspirin'
 SIZE = '1k'
 NAME = 'md17'
+SCHNET_PATH = 'md17-aspirin_1k_schnet'
+
 
 def plot_rdfs(bins, target_g, simulated_g, fname, path):
     plt.title("epoch {}".format(fname))
@@ -60,16 +63,18 @@ def find_hr_from_file(molecule: str, size: str):
     # compute h(r) for simulated trajectory
 
 def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode="policy", from_pretrained=True):
-    ckpt_and_config_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
+
+    ckpt_and_config_path = os.path.join(path, "checkpoints", "checkpoint40.pt")
     schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
     if num_interactions: #manual override
         schnet_config["model_attributes"]["num_interactions"] = num_interactions
     keep = list(schnet_config["model_attributes"].keys())[0:5]
     args = {k: schnet_config["model_attributes"][k] for k in keep}
     model = SchNet(**args).to(device)
+
     if from_pretrained:
         #get checkpoint
-        ckpt_path = os.path.join(path, "checkpoints", "best_checkpoint.pt")
+        ckpt_path = ckpt_and_config_path
         checkpoint = {k: v.to(device) for k,v in torch.load(ckpt_path, map_location = torch.device("cpu"))['state_dict'].items()}
         #checkpoint =  torch.load(ckpt_path, map_location = device)["state_dict"]
         try:
@@ -77,7 +82,10 @@ def load_schnet_model(path = None, num_interactions = None, device = "cpu", mode
             model.load_state_dict(new_dict)
         except:
             model.load_state_dict(checkpoint)
-    return model, schnet_config["model_attributes"]
+
+        
+    return model, schnet_config["model_attributes"] 
+
 
 def data_to_atoms(data):
     numbers = data.atomic_numbers
@@ -112,7 +120,6 @@ def fit_rdf(suggestion_id, device, project_name):
 
     # initialize states with ASE # TODO: instead, load in your model DONE
     #initialize datasets
-    import pdb; pdb.set_trace()
     train_dataset = LmdbDataset({'src': os.path.join(NAME, MOLECULE, SIZE, 'train')})
     # valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], NAME, MOLECULE, SIZE, 'val')})
 
@@ -126,8 +133,17 @@ def fit_rdf(suggestion_id, device, project_name):
     # Initialize potentials 
     # TODO: replace with schnet DONE
     #load in schnet, train using simulate which calls odeintadjoint
-    model, config = load_schnet_model(device="gpu")
-    GNN = GNNPotentials(model, system.get_batch(), system.get_cell_len(), cutoff=cutoff, device=system.device)
+    
+
+    try:
+        device = torch.device(torch.cuda.current_device())
+    except:
+        device = "cpu"
+    pdb.set_trace()
+    model, config = load_schnet_model(path= SCHNET_PATH , device=torch.device(device))
+    batch = system.get_batch()
+    cell_len = system.get_cell_len()
+    GNN = GNNPotentials(model, batch, cell_len, cutoff=cutoff, device=system.device)
     model = GNN
 
     # define the equation of motion to propagate (the Integrater)
