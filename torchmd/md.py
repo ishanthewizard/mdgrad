@@ -4,8 +4,10 @@ import numpy as np
 import math 
 import pdb
 from ase import units
+from ase.neighborlist import natural_cutoffs, NeighborList
 from torchmd.sovlers import odeint_adjoint, odeint
 from ase.geometry import wrap_positions
+import gsd
 
 '''
     Here contains object for simulation and computing the equation of state
@@ -94,43 +96,16 @@ class Simulations():
                 # using something like runge kutta or velocity verlett.
                 trajs = odeint(self.integrator, tuple(states), t, method=self.solvemethod)
 
-            pdb.set_trace()
             self.update_log(trajs)
             self.update_states()
 
             states = self.get_check_point()
 
 
-        pdb.set_trace()
-        # create_frame(trajs)
         return trajs
-
-# def create_frame(trajs):
-#     for i in range(trajs[0].shape[0]):
-#         radii = trajs[1][i]
-
-
-#     # Particle positions, velocities, diameter
-#     partpos = detach_numpy(self.radii).tolist()
-#     velocities = detach_numpy(self.velocities).tolist()
-#     diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
-#     diameter = diameter.tolist()
-#     # Now make gsd file
-#     s = gsd.hoomd.Frame()
-#     s.configuration.step = frame
-#     s.particles.N=self.n_atoms
-#     s.particles.position = partpos
-#     s.particles.velocity = velocities
-#     s.particles.diameter = diameter
-#     s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
-#     s.configuration.step = self.dt
-
-#     s.bonds.N = self.bonds.shape[0]
-#     s.bonds.types = self.atom_types_list
-#     s.bonds.typeid = self.typeid
-#     s.bonds.group = detach_numpy(self.bonds)
-#     return s
     
+
+
 
 
 

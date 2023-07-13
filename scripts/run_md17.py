@@ -18,8 +18,9 @@ from torchmd.system import  System
 from interface import GNNPotentials
 from torchmd.md import NoseHoover, NoseHooverChain, Simulations
 from ase import units, Atoms
+from ase.neighborlist import natural_cutoffs, NeighborList
 from lmdb_dataset import LmdbDataset
-
+import gsd.hoomd
 # optional. nglview for visualization
 # import nglview as nv
 MOLECULE = 'aspirin'
@@ -106,11 +107,8 @@ def data_to_atoms(data):
 def fit_rdf(suggestion_id, device, project_name):
     model_path = '{}/{}'.format(project_name, suggestion_id)
     # Remove the directory if it already exists
-    if os.path.exists(model_path):
-        shutil.rmtree(model_path)
-
-    # Create the new directory
-    os.makedirs(model_path)
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
 
     # initialize states with ASE # TODO: instead, load in your model DONE
     #initialize datasets
@@ -140,8 +138,15 @@ def fit_rdf(suggestion_id, device, project_name):
     system = System(atoms, device=device)
     system.set_temperature(298.0 * units.kB)
     print(system.get_temperature())
-    
-
+    NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
+    NL.update(atoms)
+    bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
+    atom_types_list = list(set(atoms.get_chemical_symbols()))
+    atom_types = atoms.get_chemical_symbols()
+    type_to_index = {value: index for index, value in enumerate(atom_types_list)}
+    typeid = np.zeros(n_atoms, dtype=int)
+    for i, _type in enumerate(atom_types):
+        typeid[i] = type_to_index[_type]    
     try:
         device2 = torch.device(torch.cuda.current_device())
     except:
@@ -156,7 +161,7 @@ def fit_rdf(suggestion_id, device, project_name):
     atomic_nums = torch.Tensor(atoms.get_atomic_numbers()).to(torch.long).to(device2)
     GNN = GNNPotentials(system, model, cutoff, atomic_nums )
     model = GNN
-
+    ovito_config = gsd.hoomd.open(name= f'{model_path}/sim_temp.gsd', mode='w')
     # define the equation of motion to propagate (the Integrater)
     diffeq = NoseHoover(model, 
             system,
@@ -193,6 +198,9 @@ def fit_rdf(suggestion_id, device, project_name):
         current_time = datetime.now() 
         
         trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt)
+        pdb.set_trace()
+        ovito_config.append(create_frame(trajs, dt, atoms, device2 ,bonds, atom_types_list, typeid))
+
         v_t, q_t, pv_t = trajs 
         _, bins, g = obs(q_t)
         if  i % 25 == 0:
@@ -232,37 +240,6 @@ def fit_rdf(suggestion_id, device, project_name):
     train_traj = [var[1] for var in diffeq.traj]
     save_traj(system, train_traj, model_path + '/train.xyz', skip=10)
 
-#     # Inference 
-#     sim_trajs = []
-#     for i in range(n_sim):
-#         _, q_t, _ = sim.simulate(steps=100, frequency=25)
-#         sim_trajs.append(q_t[-1].detach().cpu().numpy())
-
-#     sim_trajs = torch.Tensor(np.array(sim_trajs)).to(device)
-#     sim_trajs.requires_grad = False # no gradient required 
-
-#     # compute equilibrate rdf with finer bins 
-#     test_nbins = 128
-#     obs = rdf(system, test_nbins,  (start, end))
-#     xnew = np.linspace(start, end, test_nbins)
-#     count_obs, g_obs = get_exp_rdf(data, test_nbins, (start, end), obs) # recompute exp. rdf
-#     _, bins, g = obs(sim_trajs) # compute simulated rdf
-
-#     # compute equilibrated rdf 
-#     loss_js = JS_rdf(g_obs, g)
-
-#     save_traj(system, sim_trajs.detach().cpu().numpy(),  
-#         model_path + '/sim.xyz', skip=1)
-
-#     plot_rdfs(xnew, g_obs, g, "final", model_path)
-
-#     np.savetxt(model_path + '/loss.csv', np.array(loss_log))
-
-#     if torch.isnan(loss_js):
-#         return np.array(loss_log[-16:-1]).mean()
-#     else:
-#         return loss_js.item()
-
 def save_traj(system, traj, fname, skip=10):
     atoms_list = []
     for i, frame in enumerate(traj):
@@ -270,5 +247,41 @@ def save_traj(system, traj, fname, skip=10):
             frame = Atoms(positions=frame, numbers=system.get_atomic_numbers())
             atoms_list.append(frame)
     write(fname, atoms_list) 
+
+
+def detach_numpy(tensor):
+    tensor = tensor.detach().cpu()
+    if torch._C._functorch.is_gradtrackingtensor(tensor):
+        tensor = torch._C._functorch.get_unwrapped(tensor)
+        return np.array(tensor.storage().tolist()).reshape(tensor.shape)
+    return tensor.numpy()
+
+def create_frame(trajs, dt, atoms, device, bonds, atom_types_list, typeid):
+        for i in range(trajs[0].shape[0]):
+            radii = trajs[1][i]
+            velocities = trajs[0][i]
+            n_atoms = trajs[0].shape[1]
+            # Particle positions, velocities, diameter
+            partpos = detach_numpy(radii).tolist()
+            velocities = detach_numpy(velocities).tolist()
+            diameter = 10*0.08*np.ones((n_atoms,))
+            diameter = diameter.tolist()
+            # Now make gsd file
+            s = gsd.hoomd.Frame()
+            s.configuration.step = i
+            s.particles.N= n_atoms
+            s.particles.position = partpos
+            s.particles.velocity = velocities
+            s.particles.diameter = diameter
+            s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
+            s.configuration.step = dt
+            #extract bond and atom type information
+
+            s.bonds.N =  bonds.shape[0]
+            s.bonds.types = atom_types_list
+            s.bonds.typeid = typeid
+            s.bonds.group = detach_numpy(bonds)
+        return s
+
 
 fit_rdf("123", "cuda", "test_proj")
