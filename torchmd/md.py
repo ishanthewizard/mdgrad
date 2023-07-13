@@ -93,12 +93,46 @@ class Simulations():
                 # ode int by the solvemethod string) applies this derivative in the forward step
                 # using something like runge kutta or velocity verlett.
                 trajs = odeint(self.integrator, tuple(states), t, method=self.solvemethod)
+
+            pdb.set_trace()
             self.update_log(trajs)
             self.update_states()
 
             states = self.get_check_point()
 
+
+        pdb.set_trace()
+        # create_frame(trajs)
         return trajs
+
+# def create_frame(trajs):
+#     for i in range(trajs[0].shape[0]):
+#         radii = trajs[1][i]
+
+
+#     # Particle positions, velocities, diameter
+#     partpos = detach_numpy(self.radii).tolist()
+#     velocities = detach_numpy(self.velocities).tolist()
+#     diameter = 10*self.diameter_viz*np.ones((self.n_atoms,))
+#     diameter = diameter.tolist()
+#     # Now make gsd file
+#     s = gsd.hoomd.Frame()
+#     s.configuration.step = frame
+#     s.particles.N=self.n_atoms
+#     s.particles.position = partpos
+#     s.particles.velocity = velocities
+#     s.particles.diameter = diameter
+#     s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
+#     s.configuration.step = self.dt
+
+#     s.bonds.N = self.bonds.shape[0]
+#     s.bonds.types = self.atom_types_list
+#     s.bonds.typeid = self.typeid
+#     s.bonds.group = detach_numpy(self.bonds)
+#     return s
+    
+
+
 
 class NVE(torch.nn.Module):
 
@@ -214,7 +248,6 @@ class NoseHooverChain(torch.nn.Module):
         
     def forward(self, t, state):
         with torch.set_grad_enabled(True):        
-            pdb.set_trace()
             v = state[0]
             q = state[1]
             p_v = state[2]
@@ -252,6 +285,70 @@ class NoseHooverChain(torch.nn.Module):
 
         states = [torch.Tensor(var).to(self.system.device) for var in states]
         return states
+
+
+
+class NoseHoover(torch.nn.Module):
+    def __init__(self, potentials, system, T, targetEkin, num_chains=2, Q=1.0, adjoint=True,
+                topology_update_freq=1):
+        super().__init__()
+        self.model = potentials 
+        self.system = system
+        self.device = system.device # should just use system.device throughout
+        self.mass = torch.Tensor(system.get_masses()).to(self.device)
+        self.T = T # in energy unit(eV)
+        self.N_dof = self.mass.shape[0] * system.dim
+        self.Q = Q
+        self.dim = system.dim
+        self.adjoint = adjoint
+        self.state_keys = ['velocities', 'positions', 'baths']
+        self.topology_update_freq = topology_update_freq
+        self.update_count = 0
+        self.targetEkin = targetEkin
+
+    def update_topology(self, q):
+
+        if self.update_count % self.topology_update_freq == 0:
+            self.model._reset_topology(q)
+        self.update_count += 1
+
+
+    def update_T(self, T):
+        self.T = T 
+        
+    def forward(self, t, state):
+        with torch.set_grad_enabled(True):        
+            v = state[0]
+            q = state[1]
+            
+            if self.adjoint:
+                q.requires_grad = True
+            
+            p = v * self.mass[:, None]
+
+            sys_ke = 0.5 * (p.pow(2) / self.mass[:, None]).sum() 
+            
+            self.update_topology(q)           
+            
+            u = self.model(q)
+            f = -compute_grad(inputs=q, output=u.sum(-1))
+            accel = f / self.mass[:, None]
+
+        return (accel, v,  1/self.Q * (sys_ke - self.targetEkin))
+
+    def get_inital_states(self, wrap=True):
+        states = [
+                self.system.get_velocities(), 
+                self.system.get_positions(wrap=wrap), 
+                [0.0]]
+
+        states = [torch.Tensor(var).to(self.system.device) for var in states]
+        return states
+        
+
+
+
+
 
 
 class Isomerization(torch.nn.Module):

@@ -133,7 +133,6 @@ class GNNPotentials(GeneralInteraction):
             TYPE: Description
         """
         #self._reset_topology(xyz)
-        import pdb; pdb.set_trace()
         results = self.gnn(self.atomic_numbers, xyz)
         return results
 

@@ -16,7 +16,7 @@ from ase.io import read, Trajectory, write
 from torchmd.observable import *
 from torchmd.system import  System
 from interface import GNNPotentials
-from torchmd.md import NoseHooverChain, Simulations
+from torchmd.md import NoseHoover, NoseHooverChain, Simulations
 from ase import units, Atoms
 from lmdb_dataset import LmdbDataset
 
@@ -30,11 +30,13 @@ SCHNET_PATH = 'md17-aspirin_1k_schnet'
 
 def plot_rdfs(bins, target_g, simulated_g, fname, path):
     plt.title("epoch {}".format(fname))
-    plt.plot(bins, simulated_g.detach().cpu().numpy() , linewidth=4, alpha=0.6, label='sim.' )
-    plt.plot(bins, target_g.detach().cpu().numpy(), linewidth=2,linestyle='--', c='black', label='exp.')
+    plt.plot(bins, simulated_g.detach().cpu().numpy(), c='blue', label='sim.' )
+    plt.plot(bins, target_g, linewidth=2,linestyle='--', c='black', label='exp.')
+    plt.legend()
     plt.xlabel("$\AA$")
     plt.ylabel("g(r)")
-    plt.savefig(path + '/{}.jpg'.format(fname), bbox_inches='tight')
+    plt.ylim(0 , .6)
+    plt.savefig(path + '/rdf_plot.jpg', bbox_inches='tight')
     plt.show()
     plt.close()
 
@@ -100,15 +102,8 @@ def data_to_atoms(data):
 
 
 
-def fit_rdf(suggestion_id, device, project_name):
-    n_epochs = 1000  # number of epochs to train for
-    cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
-    nbins = 500 # bins for the rdf histogram
-    tau = 120 # ??? this is the number of timesteps, idk why it's called tau
-    start = 0 # start of rdf range
-    end = 6 # end of rdf range
-    lr_initial = .001 # learning rate passed to optim
 
+def fit_rdf(suggestion_id, device, project_name):
     model_path = '{}/{}'.format(project_name, suggestion_id)
     # Remove the directory if it already exists
     if os.path.exists(model_path):
@@ -117,8 +112,6 @@ def fit_rdf(suggestion_id, device, project_name):
     # Create the new directory
     os.makedirs(model_path)
 
-    print("Training for {} epochs".format(n_epochs))
-
     # initialize states with ASE # TODO: instead, load in your model DONE
     #initialize datasets
     train_dataset = LmdbDataset({'src': os.path.join(NAME, MOLECULE, SIZE, 'train')})
@@ -126,14 +119,27 @@ def fit_rdf(suggestion_id, device, project_name):
 
     #get first configuration from dataset
     init_data = train_dataset.__getitem__(0)
+
+
+    n_epochs = 1000  # number of epochs to train for
+    cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
+    nbins = 500 # bins for the rdf histogram
+    tau = 300 # this is the number of timesteps, idk why it's called tau
+    start = 0 # start of rdf range
+    end = 6 # end of rdf range
+    lr_initial = .0001 # learning rate passed to optim
+    dt = 0.5 * units.fs
+    temp = 500* units.kB
+    ttime =  20   #ttime is only used for NVT setup - it's not the total time
+    n_atoms =init_data['pos'].shape[0] 
+    targeEkin = 0.5 * (3.0 * n_atoms) * temp
+    Q = 3.0 * n_atoms * temp * (ttime * dt)**2
+
+
     atoms = data_to_atoms(init_data)
     system = System(atoms, device=device)
     system.set_temperature(298.0 * units.kB)
     print(system.get_temperature())
-
-    # Initialize potentials 
-    # TODO: replace with schnet DONE
-    #load in schnet, train using simulate which calls odeintadjoint
     
 
     try:
@@ -142,7 +148,7 @@ def fit_rdf(suggestion_id, device, project_name):
         device2 = "cpu"
 
     
-    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='40', device=torch.device(device2))
+    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='600', device=torch.device(device2))
     batch = system.get_batch()
     cell_len = system.get_cell_len()
 
@@ -152,15 +158,15 @@ def fit_rdf(suggestion_id, device, project_name):
     model = GNN
 
     # define the equation of motion to propagate (the Integrater)
-    diffeq = NoseHooverChain(model, 
+    diffeq = NoseHoover(model, 
             system,
-            Q=50.0, 
-            T=298.0 * units.kB,
-            num_chains=5, 
+            Q= Q, 
+            T= temp,
+            targetEkin= targeEkin,
             adjoint=True).to(device)
 
     # define simulator with 
-    sim = Simulations(system, diffeq)
+    sim = Simulations(system, diffeq, method="MDsimNH")
 
     # initialize observable function 
     obs = rdf(system, nbins, (start, end) ) # initialize rdf function for the system
@@ -177,18 +183,24 @@ def fit_rdf(suggestion_id, device, project_name):
     loss_js_log = []
     traj = []
 
-
+    # Convert `g_obs` to a PyTorch tensor and move it to the same device as `g`
+    g_obs_tensor = torch.from_numpy(g_obs).to(device)
+    
+    print("Training for {} epochs".format(n_epochs))
     for i in range(0, n_epochs):
+        if i == 100:
+            pdb.set_trace()
         current_time = datetime.now() 
-        trajs = sim.simulate(steps=tau, frequency=int(tau//2))
+        
+        trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt)
         v_t, q_t, pv_t = trajs 
         _, bins, g = obs(q_t)
-        if i % 25 == 0:
+        if  i % 25 == 0:
            plot_rdfs(xnew, g_obs, g, i, model_path)
-        # this shoud be wrapped in some way 
-        loss = (g- g_obs).pow(2).sum()
-                
-        print(loss_js.item(), loss.item())
+        pdb.set_trace()
+        # Calculate the loss
+        loss = (g - g_obs_tensor).pow(2).sum()
+        print("LOSS: ", loss.item())
         loss.backward()
         
         duration = (datetime.now() - current_time)
@@ -203,7 +215,7 @@ def fit_rdf(suggestion_id, device, project_name):
             plt.close()
             return np.array(loss_log[-16:-1]).mean()
         else:
-            loss_log.append(loss_js.item())
+            loss_log.append(loss.item())
 
         # check for loss convergence
         min_idx = np.array(loss_log).argmin()

@@ -11,13 +11,17 @@ from torch import nn
 class NHVerlet(FixedGridODESolver):
 
     def step_func(self, func, t, dt, y):
-        import pdb; pdb.set_trace()
         return NHverlet_update(func, t, dt, y)
 
 class Verlet(FixedGridODESolver):
 
     def step_func(self, func, t, dt, y):
         return verlet_update(func, t, dt, y)
+    
+class MDsimNH(FixedGridODESolver):
+    def step_func(self, func, t, dt, y):
+        return forward_nvt_update(func, t, dt, y)
+
 
 def verlet_update(func, t, dt, y):
 
@@ -114,7 +118,7 @@ def NHverlet_update(func, t, dt, y):
         # update half step 
         v_step_half = 1/2 *  a_0 * dt 
         pv_step_half = 1/2 * dpvdt_0 * dt
-
+    
         # update full step in positions 
         q_step_full = (y[0] + v_step_half) * dt 
 
@@ -126,55 +130,41 @@ def NHverlet_update(func, t, dt, y):
         pv_step_full = pv_step_half + 1/2 * dpvdt_half * dt 
 
         return tuple((v_step_full, q_step_full, pv_step_full))
-    
-    elif len(y) == NUM_VAR * 2 + 2: # integrator in the backward call 
-        dydt_0 = func(t, y)
-        
-        v_step_half = 1/2 * dydt_0[0] * dt 
-        #vadjoint_step_half = 1/2 * dydt_0[0 + 3] * dt # update adjoint state 
-        
-        pv_step_half = 1/2 * dydt_0[2] * dt 
-        #pvadjoint_step_half = 1/2 * dydt_0[2 + 3] * dt 
-        
-        q_step_full = (y[0] + v_step_half) * dt 
-        
-        # half step adjoint update 
-        vadjoint_half = dydt_0[3] * 0.5 * dt # update adjoint state 
-        qadjoint_half = dydt_0[4] * 0.5 * dt 
-        pvadjoint_half = dydt_0[5] * 0.5 * dt
-        dLdt_half = dydt_0[6] * 0.5 * dt 
-        dLdpar_half = dydt_0[7] * 0.5 * dt 
-        
-        dydt_mid = func(t, (y[0] + v_step_half, y[1] + q_step_full, y[2] + pv_step_half, 
-                    y[3] + vadjoint_half, y[4] + qadjoint_half, y[5] + pvadjoint_half, 
-                    y[6] + dLdt_half, y[7] + dLdpar_half
-                   ))
 
-        v_step_full = v_step_half + 1/2 * dydt_mid[0] * dt 
-        pv_step_full = pv_step_half + 1/2 * dydt_mid[2] * dt 
-        
-        # half step adjoint update 
-        vadjoint_step = dydt_mid[3] * dt # update adjoint state 
-        qadjoint_step = dydt_mid[4] * dt 
-        pvadjoint_step = dydt_mid[5] * dt
-        dLdt_step = dydt_mid[6] * dt 
-        dLdpar_step = dydt_mid[7] * dt         
-        
-        return (v_step_full, q_step_full, pv_step_full, 
-                vadjoint_step, qadjoint_step, pvadjoint_step,
-                dLdt_step, dLdpar_step)
 
-    else:
-        raise ValueError("received {} argumets integration, but should be {} for the forward call or {} for the backward call".format(
-                len(y), NUM_VAR, 2 * NUM_VAR + 2))
+def forward_nvt_update(func, t, dt, y):
+    # get current accelerations 
+    accel, vel, zeta_dot = func(t,y)
 
+    # make full step in position 
+    radii = y[1] + vel * dt + \
+        (accel - y[2] * vel) * (0.5 * dt ** 2)
+
+    # make half a step in velocity
+    velocities = y[0] + 0.5 * dt * (accel - y[2] * y[0])
+
+    # make a half step in self.zeta
+    zeta = y[2] +  0.5 * zeta_dot * dt
+
+    # make a full step in accelerations
+    accel, vel, zeta_dot = func(t, (velocities, radii, zeta))
+
+    # make another halfstep in self.zeta
+    zeta = zeta + 0.5 * dt * zeta_dot
+
+    # make another half step in velocity
+    velocities = (velocities + 0.5 * dt * accel) / \
+        (1 + 0.5 * dt * zeta)
+
+    return (velocities - y[0], radii - y[1], zeta - y[2])
 
 def odeint(func, y0, t, rtol=1e-7, atol=1e-9, method=None, options=None):
 
     SOLVERS = {
     'rk4': RK4,
     'NH_verlet': NHVerlet,
-    'verlet': Verlet
+    'verlet': Verlet,
+    'MDsimNH': MDsimNH
     }
 
     tensor_input, func, y0, t = _check_inputs(func, y0, t)
@@ -211,7 +201,6 @@ class OdeintAdjointMethod(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *grad_output):
-
         t, flat_params, *ans = ctx.saved_tensors #save intermediate outputs 
         ans = tuple(ans) # tuple containing all timesteps of (vel, pos, momentum)
         func, rtol, atol, method, options = ctx.func, ctx.rtol, ctx.atol, ctx.method, ctx.options #Func calculates delta p , delta q
