@@ -257,7 +257,6 @@ class NoseHooverChain(torch.nn.Module):
                 self.system.get_velocities(), 
                 self.system.get_positions(wrap=wrap), 
                 [0.0] * self.num_chains]
-
         states = [torch.Tensor(var).to(self.system.device) for var in states]
         return states
 
@@ -314,9 +313,10 @@ class NoseHoover(torch.nn.Module):
     def get_inital_states(self, wrap=True):
         states = [
                 self.system.get_velocities(), 
-                self.system.get_positions(wrap=wrap), 
+                self.system.get_positions(), 
                 [0.0]]
-
+        tester = self.system.get_positions()
+        tester2  = self.system.get_positions(wrap=wrap)
         states = [torch.Tensor(var).to(self.system.device) for var in states]
         return states
         

@@ -36,7 +36,7 @@ def plot_rdfs(bins, target_g, simulated_g, fname, path):
     plt.legend()
     plt.xlabel("$\AA$")
     plt.ylabel("g(r)")
-    plt.ylim(0 , .6)
+    # plt.ylim(0 , .6)
     plt.savefig(path + '/rdf_plot.jpg', bbox_inches='tight')
     plt.show()
     plt.close()
@@ -50,11 +50,9 @@ def get_hr(traj, bins):
     hist, _ = np.histogram(pdist[:].flatten().numpy(), bins, density=True)
     return hist
 
-def find_hr_from_file(molecule: str, size: str):
+def find_hr_from_file(molecule: str, size: str, n_bins, start, end):
     #RDF plotting parameters
-    xlim = 6
-    n_bins = 500
-    bins = np.linspace(1e-6, xlim, n_bins + 1) # for computing h(r)
+    bins = np.linspace(start, end, n_bins + 1) # for computing h(r)
 
     # load ground truth data
     DATAPATH = f'md17/{molecule}/{size}/test/nequip_npz.npz'
@@ -116,14 +114,14 @@ def fit_rdf(suggestion_id, device, project_name):
     # valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], NAME, MOLECULE, SIZE, 'val')})
 
     #get first configuration from dataset
-    init_data = train_dataset.__getitem__(0)
+    init_data = train_dataset.__getitem__(10)
 
 
     n_epochs = 1000  # number of epochs to train for
     cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 300 # this is the number of timesteps, idk why it's called tau
-    start = 0 # start of rdf range
+    tau = 2000 # this is the number of timesteps, idk why it's called tau
+    start = 1e-6 # start of rdf range
     end = 6 # end of rdf range
     lr_initial = .0001 # learning rate passed to optim
     dt = 0.5 * units.fs
@@ -135,9 +133,11 @@ def fit_rdf(suggestion_id, device, project_name):
 
 
     atoms = data_to_atoms(init_data)
+    tester = atoms.get_positions()
     system = System(atoms, device=device)
-    system.set_temperature(298.0 * units.kB)
-    print(system.get_temperature())
+    tester = system.get_positions()
+    system.set_temperature(temp)
+    tester = system.get_positions()
     NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
     NL.update(atoms)
     bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
@@ -153,9 +153,7 @@ def fit_rdf(suggestion_id, device, project_name):
         device2 = "cpu"
 
     
-    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='600', device=torch.device(device2))
-    batch = system.get_batch()
-    cell_len = system.get_cell_len()
+    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='500', device=torch.device(device2))
 
 
     atomic_nums = torch.Tensor(atoms.get_atomic_numbers()).to(torch.long).to(device2)
@@ -174,11 +172,15 @@ def fit_rdf(suggestion_id, device, project_name):
     sim = Simulations(system, diffeq, method="MDsimNH")
 
     # initialize observable function 
-    obs = rdf(system, nbins, (start, end) ) # initialize rdf function for the system
+    obs = rdf(system, nbins, (start, end), width=.01 ) # initialize rdf function for the system
+
+
+
+
 
     xnew = np.linspace(start, end, nbins) # probably just the rdf bins
     # get experimental rdf TODO: replace 
-    g_obs = find_hr_from_file("aspirin", "1k")
+    g_obs = find_hr_from_file("aspirin", "1k", n_bins=nbins, start=start, end=end)
     # count_obs, g_obs = get_exp_rdf(data, nbins, (start, end), obs)
 
     # define optimizer 
@@ -193,19 +195,16 @@ def fit_rdf(suggestion_id, device, project_name):
     
     print("Training for {} epochs".format(n_epochs))
     for i in range(0, n_epochs):
-        if i == 100:
-            pdb.set_trace()
         current_time = datetime.now() 
         
         trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt)
-        pdb.set_trace()
-        ovito_config.append(create_frame(trajs, dt, atoms, device2 ,bonds, atom_types_list, typeid))
-
+        download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config)
+        ovito_config.close()
         v_t, q_t, pv_t = trajs 
         _, bins, g = obs(q_t)
         if  i % 25 == 0:
            plot_rdfs(xnew, g_obs, g, i, model_path)
-        pdb.set_trace()
+
         # Calculate the loss
         loss = (g - g_obs_tensor).pow(2).sum()
         print("LOSS: ", loss.item())
@@ -256,16 +255,16 @@ def detach_numpy(tensor):
         return np.array(tensor.storage().tolist()).reshape(tensor.shape)
     return tensor.numpy()
 
-def create_frame(trajs, dt, atoms, device, bonds, atom_types_list, typeid):
-        for i in range(trajs[0].shape[0]):
+def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config):
+        tau = trajs[0].shape[0]
+        for i in range(tau):
             radii = trajs[1][i]
             velocities = trajs[0][i]
             n_atoms = trajs[0].shape[1]
             # Particle positions, velocities, diameter
             partpos = detach_numpy(radii).tolist()
             velocities = detach_numpy(velocities).tolist()
-            diameter = 10*0.08*np.ones((n_atoms,))
-            diameter = diameter.tolist()
+            diameter = (10*0.08*np.ones((n_atoms,))).tolist()
             # Now make gsd file
             s = gsd.hoomd.Frame()
             s.configuration.step = i
@@ -274,14 +273,12 @@ def create_frame(trajs, dt, atoms, device, bonds, atom_types_list, typeid):
             s.particles.velocity = velocities
             s.particles.diameter = diameter
             s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
-            s.configuration.step = dt
             #extract bond and atom type information
-
             s.bonds.N =  bonds.shape[0]
             s.bonds.types = atom_types_list
             s.bonds.typeid = typeid
             s.bonds.group = detach_numpy(bonds)
-        return s
+            ovito_config.append(s)
 
 
 fit_rdf("123", "cuda", "test_proj")
