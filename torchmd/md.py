@@ -255,7 +255,7 @@ class NoseHooverChain(torch.nn.Module):
     def get_inital_states(self, wrap=True):
         states = [
                 self.system.get_velocities(), 
-                self.system.get_positions(wrap=wrap), 
+                self.system.get_positions(wrap=False), 
                 [0.0] * self.num_chains]
         states = [torch.Tensor(var).to(self.system.device) for var in states]
         return states
@@ -273,6 +273,7 @@ class NoseHoover(torch.nn.Module):
         self.T = T # in energy unit(eV)
         self.N_dof = self.mass.shape[0] * system.dim
         self.Q = Q
+        # self.Q = torch.Tensor([self.Q]).to(self.device)
         self.dim = system.dim
         self.adjoint = adjoint
         self.state_keys = ['velocities', 'positions', 'baths']
@@ -307,16 +308,15 @@ class NoseHoover(torch.nn.Module):
             u = self.model(q)
             f = -compute_grad(inputs=q, output=u.sum(-1))
             accel = f / self.mass[:, None]
+        a = (accel, v,  1/self.Q * (sys_ke - self.targetEkin))
 
-        return (accel, v,  1/self.Q * (sys_ke - self.targetEkin))
+        return (accel, v,  (1/self.Q * (sys_ke - self.targetEkin)))
 
     def get_inital_states(self, wrap=True):
         states = [
                 self.system.get_velocities(), 
                 self.system.get_positions(), 
                 [0.0]]
-        tester = self.system.get_positions()
-        tester2  = self.system.get_positions(wrap=wrap)
         states = [torch.Tensor(var).to(self.system.device) for var in states]
         return states
         

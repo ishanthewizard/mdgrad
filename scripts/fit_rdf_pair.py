@@ -512,9 +512,9 @@ def fit_lj(assignments, suggestion_id, device, sys_params, project_name):
         else:
             loss = assignments['rdf_weight'] * loss_rdf
 
-        pdb.set_trace()
+        
         loss.backward()
-
+        pdb.set_trace()
         optimizer.step()
         optimizer.zero_grad()
         

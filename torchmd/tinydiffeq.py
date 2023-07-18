@@ -2,7 +2,7 @@
 import warnings
 import torch
 import abc
-import tqdm
+from tqdm import tqdm
 
 '''
     Adapted from https://github.com/rtqichen/torchdiffeq

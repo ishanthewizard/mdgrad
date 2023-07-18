@@ -120,7 +120,7 @@ def fit_rdf(suggestion_id, device, project_name):
     n_epochs = 1000  # number of epochs to train for
     cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 2000 # this is the number of timesteps, idk why it's called tau
+    tau = 100 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
     end = 6 # end of rdf range
     lr_initial = .0001 # learning rate passed to optim
@@ -130,6 +130,7 @@ def fit_rdf(suggestion_id, device, project_name):
     n_atoms =init_data['pos'].shape[0] 
     targeEkin = 0.5 * (3.0 * n_atoms) * temp
     Q = 3.0 * n_atoms * temp * (ttime * dt)**2
+    use_chain = False
 
 
     atoms = data_to_atoms(init_data)
@@ -160,16 +161,29 @@ def fit_rdf(suggestion_id, device, project_name):
     GNN = GNNPotentials(system, model, cutoff, atomic_nums )
     model = GNN
     ovito_config = gsd.hoomd.open(name= f'{model_path}/sim_temp.gsd', mode='w')
+
+
     # define the equation of motion to propagate (the Integrater)
+
     diffeq = NoseHoover(model, 
             system,
             Q= Q, 
             T= temp,
             targetEkin= targeEkin,
             adjoint=True).to(device)
+    sim = Simulations(system, diffeq, method="MDsimNH", wrap=False)
+    if use_chain:
+        diffeq = NoseHooverChain(model, 
+            system,
+            Q=50.0, 
+            T=298.0 * units.kB,
+            num_chains=5, 
+            adjoint=True).to(device)
+        # define simulator with 
+        sim = Simulations(system, diffeq, method="NH_verlet")
 
-    # define simulator with 
-    sim = Simulations(system, diffeq, method="MDsimNH")
+
+
 
     # initialize observable function 
     obs = rdf(system, nbins, (start, end), width=.01 ) # initialize rdf function for the system
@@ -208,7 +222,9 @@ def fit_rdf(suggestion_id, device, project_name):
         # Calculate the loss
         loss = (g - g_obs_tensor).pow(2).sum()
         print("LOSS: ", loss.item())
+        
         loss.backward()
+        pdb.set_trace()
         
         duration = (datetime.now() - current_time)
         

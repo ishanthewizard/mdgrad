@@ -1,3 +1,4 @@
+import pdb
 from torchmd.tinydiffeq import _check_inputs, _flatten, _flatten_convert_none_to_zeros
 from torchmd.tinydiffeq import RK4, FixedGridODESolver
 
@@ -129,34 +130,109 @@ def NHverlet_update(func, t, dt, y):
         v_step_full = v_step_half + 1/2 * a_dt * dt
         pv_step_full = pv_step_half + 1/2 * dpvdt_half * dt 
 
-        return tuple((v_step_full, q_step_full, pv_step_full))
+        result =  tuple((v_step_full, q_step_full, pv_step_full))
+        return result
 
 
 def forward_nvt_update(func, t, dt, y):
-    # get current accelerations 
-    accel, vel, zeta_dot = func(t,y)
+    NUM_VAR = 3
+    if len(y) == NUM_VAR:
+        # get current accelerations 
+        accel, vel, zeta_dot = func(t,y)
 
-    # make full step in position 
-    radii = y[1] + vel * dt + \
-        (accel - y[2] * vel) * (0.5 * dt ** 2)
+        # make full step in position 
+        radii = y[1] + vel * dt + \
+            (accel - y[2] * vel) * (0.5 * dt ** 2)
 
-    # make half a step in velocity
-    velocities = y[0] + 0.5 * dt * (accel - y[2] * y[0])
+        # make half a step in velocity
+        velocities = y[0] + 0.5 * dt * (accel - y[2] * y[0])
 
-    # make a half step in self.zeta
-    zeta = y[2] +  0.5 * zeta_dot * dt
+        # make a half step in self.zeta
+        zeta = y[2] +  0.5 * zeta_dot * dt
 
-    # make a full step in accelerations
-    accel, vel, zeta_dot = func(t, (velocities, radii, zeta))
+        # make a full step in accelerations
+        accel, vel, zeta_dot = func(t, (velocities, radii, zeta))
 
-    # make another halfstep in self.zeta
-    zeta = zeta + 0.5 * dt * zeta_dot
+        # make another halfstep in self.zeta
+        zeta = zeta + 0.5 * dt * zeta_dot
 
-    # make another half step in velocity
-    velocities = (velocities + 0.5 * dt * accel) / \
-        (1 + 0.5 * dt * zeta)
+        # make another half step in velocity
+        velocities = (velocities + 0.5 * dt * accel) / \
+            (1 + 0.5 * dt * zeta)
+        
+        # pdb.set_trace()
+        result = (velocities - y[0], radii - y[1], zeta - y[2])
+        return result
+    elif len(y) == NUM_VAR * 2 + 2: # integrator in the backward call
 
-    return (velocities - y[0], radii - y[1], zeta - y[2])
+        v_full, x_full, z_full, vad_full, xad_full, zad_full = y[0], y[1], y[2], y[3], y[4], y[5]
+        # aug_y0 = (*ans_i, *adj_y, adj_time, adj_params)
+        dv, dx, dz, vad_vjp_full, xad_vjp_full, zad_vjp_full, vjp_t, vjp_params= func(t, y)  # compute dy, and vjps 
+
+        # Reverse integrator 
+        v_step_half = 1/2 * dv * dt 
+        v_half = v_full - v_step_half
+        x_step_full = v_half * dt 
+        x_0 = x_full - x_step_full
+        zeta_half = .5 * dz * dt
+
+        #print(vad_vjp, xad_vjp)
+
+        # So vad_vjp = xad_full?
+
+        # func is the automatically generated ODE for adjoints 
+        # dydt_0 variable name is a bit confusing(it even confused me after 3 months of writing this snippit),
+        # I need to change to the right adjoint definition -> dLdv, dLdq or v_hat and q_t  
+
+        # more importantly are there better way to integrate the adjoint state other than midpoint integration 
+
+        #vadjoint_step_half = 1/2 * dydt_0[0 + 3] * dt # update adjoint state 
+        
+        # func returns the infiniesmal changes of different states 
+
+        #xad_full_tmp = xad_vjp
+        #vad_full = vad_full
+
+        dxad_full = xad_vjp_full * dt * 0.5
+        dvad_half = (xad_full + dxad_full) * dt #* 0.5 # alternatively dvad_half = dvad_half = xad_full *  dt
+        dzad_half = ()
+
+        vad_half = vad_full + dvad_half 
+
+        #xad_full = xad_vjp
+        #vad_full = vad_vjp_full
+
+        #print(vad_full, xad_full, vad_vjp, xad_vjp, vad_half)
+
+        dLdt_half = vjp_t  * dt 
+        dLdpar_half = vjp_params * 0.5 * dt # par_adjoint 
+
+        #xad_vjp_half = xad_vjp * dt * 0.5
+        
+        dv, dx, vad_vjp_half, xad_vjp_half, vjp_t, vjp_params = func(t, (v_half, x_0, 
+                    vad_half, xad_full + dxad_full , 
+                    y[4] + dLdt_half, y[5] + dLdpar_half
+                   ))
+
+        v_step_full = v_step_half - dv * dt * 0.5 
+
+        dvad_0 = vad_vjp_full * dt # update adjoint state 
+        dxad_0 = xad_vjp_half * dt * 0.5#   xad_vjp_half * dt #+  xad_vjp_full * dt * 0.5
+
+        dLdt_step = vjp_t * dt 
+        dLdpar_step = vjp_params * dt * 0.5
+        
+        return (v_step_full, x_step_full,
+                (dvad_half), (dxad_0 + dxad_full), 
+                dLdt_step,  dLdpar_half * 2)
+    else:
+        raise ValueError("received {} argumets integration, but should be {} for the forward call or {} for the backward call".format(
+                len(y), NUM_VAR, 2 * NUM_VAR + 2))
+
+
+
+
+
 
 def odeint(func, y0, t, rtol=1e-7, atol=1e-9, method=None, options=None):
 
@@ -206,7 +282,6 @@ class OdeintAdjointMethod(torch.autograd.Function):
         func, rtol, atol, method, options = ctx.func, ctx.rtol, ctx.atol, ctx.method, ctx.options #Func calculates delta p , delta q
         n_tensors = len(ans) # for velocity verlett, you will have 2, NH will have 3
         f_params = tuple(func.parameters()) #These are the weights of the neural nets!!!
-
         #summary of variables:
         #adj_time - backwards flowing time
         #adj_y  - adjoint sensitivities (dL/dy_t) - total derivatives
@@ -217,6 +292,7 @@ class OdeintAdjointMethod(torch.autograd.Function):
         def augmented_dynamics(t, y_aug):
             # Dynamics of the original system augmented with
             # the adjoint wrt y, and an integrator wrt t and args.
+            #pdb.set_trace()
             y, adj_y = y_aug[:n_tensors], y_aug[n_tensors:2 * n_tensors]  # Ignore adj_time and adj_params.
 
             with torch.set_grad_enabled(True):
@@ -225,8 +301,9 @@ class OdeintAdjointMethod(torch.autograd.Function):
 
                 #run one MD step to get f
                 func_eval = func(t, y)
-
+                func_eval = (func_eval[0], func_eval[1], func_eval[2].unsqueeze(0))
                 #compute VJPs: -aT df/dt , -aT df/dz, and -aT df/dtheta
+                # pdb.set_trace()
                 vjp_t, *vjp_y_and_params = torch.autograd.grad(
                     func_eval, (t,) + y + f_params,
                     tuple(-adj_y_ for adj_y_ in adj_y), allow_unused=True, retain_graph=True
@@ -245,7 +322,7 @@ class OdeintAdjointMethod(torch.autograd.Function):
             #return time derivatives of all components of the state: [y, dL/dy_t, t, dL/dtheta]
             return (*func_eval, *vjp_y, vjp_t, vjp_params)
 
-        T = ans[0].shape[0] #get total time 
+        T = ans[0].shape[0] #get total number of time steps
         with torch.no_grad():
             #initial state for adjoint sensitivity is just the final grad output (no future timesteps)
             adj_y = tuple(grad_output_[-1] for grad_output_ in grad_output) #adjoint sensitivities (dL/dy_t) - total derivatives
@@ -317,6 +394,7 @@ def odeint_adjoint(func, y0, t, rtol=1e-6, atol=1e-12, method=None, options=None
         raise ValueError('func is required to be an instance of nn.Module.')
 
     tensor_input = False
+    
     if torch.is_tensor(y0):
 
         class TupleFunc(nn.Module):
