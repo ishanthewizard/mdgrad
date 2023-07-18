@@ -120,7 +120,7 @@ def fit_rdf(suggestion_id, device, project_name):
     n_epochs = 1000  # number of epochs to train for
     cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 100 # this is the number of timesteps, idk why it's called tau
+    tau = 200 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
     end = 6 # end of rdf range
     lr_initial = .0001 # learning rate passed to optim
@@ -154,7 +154,7 @@ def fit_rdf(suggestion_id, device, project_name):
         device2 = "cpu"
 
     
-    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='500', device=torch.device(device2))
+    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='10', device=torch.device(device2))
 
 
     atomic_nums = torch.Tensor(atoms.get_atomic_numbers()).to(torch.long).to(device2)
@@ -224,7 +224,6 @@ def fit_rdf(suggestion_id, device, project_name):
         print("LOSS: ", loss.item())
         
         loss.backward()
-        pdb.set_trace()
         
         duration = (datetime.now() - current_time)
         

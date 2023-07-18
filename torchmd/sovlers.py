@@ -163,68 +163,42 @@ def forward_nvt_update(func, t, dt, y):
         # pdb.set_trace()
         result = (velocities - y[0], radii - y[1], zeta - y[2])
         return result
-    elif len(y) == NUM_VAR * 2 + 2: # integrator in the backward call
-
-        v_full, x_full, z_full, vad_full, xad_full, zad_full = y[0], y[1], y[2], y[3], y[4], y[5]
-        # aug_y0 = (*ans_i, *adj_y, adj_time, adj_params)
-        dv, dx, dz, vad_vjp_full, xad_vjp_full, zad_vjp_full, vjp_t, vjp_params= func(t, y)  # compute dy, and vjps 
-
-        # Reverse integrator 
-        v_step_half = 1/2 * dv * dt 
-        v_half = v_full - v_step_half
-        x_step_full = v_half * dt 
-        x_0 = x_full - x_step_full
-        zeta_half = .5 * dz * dt
-
-        #print(vad_vjp, xad_vjp)
-
-        # So vad_vjp = xad_full?
-
-        # func is the automatically generated ODE for adjoints 
-        # dydt_0 variable name is a bit confusing(it even confused me after 3 months of writing this snippit),
-        # I need to change to the right adjoint definition -> dLdv, dLdq or v_hat and q_t  
-
-        # more importantly are there better way to integrate the adjoint state other than midpoint integration 
-
+    elif len(y) == NUM_VAR * 2 + 2: # integrator in the backward call 
+        dydt_0 = func(t, y)
+        
+        v_step_half = 1/2 * dydt_0[0] * dt 
         #vadjoint_step_half = 1/2 * dydt_0[0 + 3] * dt # update adjoint state 
         
-        # func returns the infiniesmal changes of different states 
-
-        #xad_full_tmp = xad_vjp
-        #vad_full = vad_full
-
-        dxad_full = xad_vjp_full * dt * 0.5
-        dvad_half = (xad_full + dxad_full) * dt #* 0.5 # alternatively dvad_half = dvad_half = xad_full *  dt
-        dzad_half = ()
-
-        vad_half = vad_full + dvad_half 
-
-        #xad_full = xad_vjp
-        #vad_full = vad_vjp_full
-
-        #print(vad_full, xad_full, vad_vjp, xad_vjp, vad_half)
-
-        dLdt_half = vjp_t  * dt 
-        dLdpar_half = vjp_params * 0.5 * dt # par_adjoint 
-
-        #xad_vjp_half = xad_vjp * dt * 0.5
+        pv_step_half = 1/2 * dydt_0[2] * dt 
+        #pvadjoint_step_half = 1/2 * dydt_0[2 + 3] * dt 
         
-        dv, dx, vad_vjp_half, xad_vjp_half, vjp_t, vjp_params = func(t, (v_half, x_0, 
-                    vad_half, xad_full + dxad_full , 
-                    y[4] + dLdt_half, y[5] + dLdpar_half
+        q_step_full = (y[0] + v_step_half) * dt 
+        
+        # half step adjoint update 
+        vadjoint_half = dydt_0[3] * 0.5 * dt # update adjoint state 
+        qadjoint_half = dydt_0[4] * 0.5 * dt 
+        pvadjoint_half = dydt_0[5] * 0.5 * dt
+        dLdt_half = dydt_0[6] * 0.5 * dt 
+        dLdpar_half = dydt_0[7] * 0.5 * dt 
+        
+        dydt_mid = func(t, (y[0] + v_step_half, y[1] + q_step_full, y[2] + pv_step_half, 
+                    y[3] + vadjoint_half, y[4] + qadjoint_half, y[5] + pvadjoint_half, 
+                    y[6] + dLdt_half, y[7] + dLdpar_half
                    ))
 
-        v_step_full = v_step_half - dv * dt * 0.5 
-
-        dvad_0 = vad_vjp_full * dt # update adjoint state 
-        dxad_0 = xad_vjp_half * dt * 0.5#   xad_vjp_half * dt #+  xad_vjp_full * dt * 0.5
-
-        dLdt_step = vjp_t * dt 
-        dLdpar_step = vjp_params * dt * 0.5
+        v_step_full = v_step_half + 1/2 * dydt_mid[0] * dt 
+        pv_step_full = pv_step_half + 1/2 * dydt_mid[2] * dt 
         
-        return (v_step_full, x_step_full,
-                (dvad_half), (dxad_0 + dxad_full), 
-                dLdt_step,  dLdpar_half * 2)
+        # half step adjoint update 
+        vadjoint_step = dydt_mid[3] * dt # update adjoint state 
+        qadjoint_step = dydt_mid[4] * dt 
+        pvadjoint_step = dydt_mid[5] * dt
+        dLdt_step = dydt_mid[6] * dt 
+        dLdpar_step = dydt_mid[7] * dt         
+        
+        return (v_step_full, q_step_full, pv_step_full, 
+                vadjoint_step, qadjoint_step, pvadjoint_step,
+                dLdt_step, dLdpar_step)
     else:
         raise ValueError("received {} argumets integration, but should be {} for the forward call or {} for the backward call".format(
                 len(y), NUM_VAR, 2 * NUM_VAR + 2))
@@ -360,6 +334,7 @@ class OdeintAdjointMethod(torch.autograd.Function):
                 #define augmented state: (z, dL/dz_t, tau, dL/dtheta)
                 aug_y0 = (*ans_i, *adj_y, adj_time, adj_params)
                 #run augmented system backwards for one step
+                # pdb.set_trace()
                 aug_ans = odeint(
                     augmented_dynamics, aug_y0,
                     torch.tensor([t[i], t[i - 1]]), rtol=rtol, atol=atol, method=method, options=options
