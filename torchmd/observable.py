@@ -61,7 +61,6 @@ class rdf(Observable):
         self.index_tuple = index_tuple
         
     def forward(self, xyz):
-
         nbr_list, pair_dis, _ = generate_nbr_list(xyz, 
                                                self.cutoff_boundary, 
                                                self.cell, 
@@ -131,7 +130,7 @@ class Angles(Observable):
             trainable=False
         ).to(self.device)
         self.width = (self.smear.width[0]).item()
-        self.cutoff = cutoff
+        self.cutoff = cutoff + 5e-1
         self.index_tuple = index_tuple
         
     def forward(self, xyz):

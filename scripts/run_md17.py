@@ -29,15 +29,15 @@ NAME = 'md17'
 SCHNET_PATH = 'md17-aspirin_1k_schnet'
 
 
-def plot_rdfs(bins, target_g, simulated_g, fname, path):
+def plot_rdfs(bins, target_g, simulated_g, fname, path, tau):
     plt.title("epoch {}".format(fname))
-    plt.plot(bins, simulated_g.detach().cpu().numpy(), c='blue', label='sim.' )
+    plt.plot(bins, simulated_g.detach().cpu().numpy(), c='red', lw='3', label='sim.' )
     plt.plot(bins, target_g, linewidth=2,linestyle='--', c='black', label='exp.')
     plt.legend()
     plt.xlabel("$\AA$")
     plt.ylabel("g(r)")
     # plt.ylim(0 , .6)
-    plt.savefig(path + '/rdf_plot.jpg', bbox_inches='tight')
+    plt.savefig(path + f'/ch660_every1/rdf_plot{tau}.jpg', bbox_inches='tight')
     plt.show()
     plt.close()
 
@@ -114,15 +114,15 @@ def fit_rdf(suggestion_id, device, project_name):
     # valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], NAME, MOLECULE, SIZE, 'val')})
 
     #get first configuration from dataset
-    init_data = train_dataset.__getitem__(10)
+    init_data = train_dataset.__getitem__(7)
 
 
     n_epochs = 1000  # number of epochs to train for
-    cutoff = 7 # cutoff for interatomic distances (I don't think this is used)
+    cutoff = 15 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 200 # this is the number of timesteps, idk why it's called tau
+    tau = 100 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
-    end = 6 # end of rdf range
+    end = 10 # end of rdf range
     lr_initial = .0001 # learning rate passed to optim
     dt = 0.5 * units.fs
     temp = 500* units.kB
@@ -131,14 +131,12 @@ def fit_rdf(suggestion_id, device, project_name):
     targeEkin = 0.5 * (3.0 * n_atoms) * temp
     Q = 3.0 * n_atoms * temp * (ttime * dt)**2
     use_chain = False
+    rdf_skip = 1
 
 
     atoms = data_to_atoms(init_data)
-    tester = atoms.get_positions()
     system = System(atoms, device=device)
-    tester = system.get_positions()
     system.set_temperature(temp)
-    tester = system.get_positions()
     NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
     NL.update(atoms)
     bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
@@ -154,8 +152,8 @@ def fit_rdf(suggestion_id, device, project_name):
         device2 = "cpu"
 
     
-    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='10', device=torch.device(device2))
-
+    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='660', device=torch.device(device2))
+ 
 
     atomic_nums = torch.Tensor(atoms.get_atomic_numbers()).to(torch.long).to(device2)
     GNN = GNNPotentials(system, model, cutoff, atomic_nums )
@@ -168,7 +166,7 @@ def fit_rdf(suggestion_id, device, project_name):
     diffeq = NoseHoover(model, 
             system,
             Q= Q, 
-            T= temp,
+            T= temp,  
             targetEkin= targeEkin,
             adjoint=True).to(device)
     sim = Simulations(system, diffeq, method="MDsimNH", wrap=False)
@@ -212,32 +210,37 @@ def fit_rdf(suggestion_id, device, project_name):
         current_time = datetime.now() 
         
         trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt)
-        download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config)
-        ovito_config.close()
+        # download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config)
+        # ovito_config.close()
         v_t, q_t, pv_t = trajs 
-        _, bins, g = obs(q_t)
+        _, bins, g = obs(q_t[::rdf_skip])
+        g = g * .5
         if  i % 25 == 0:
-           plot_rdfs(xnew, g_obs, g, i, model_path)
+           plot_rdfs(xnew, g_obs, g, i, model_path, tau)
 
         # Calculate the loss
-        loss = (g - g_obs_tensor).pow(2).sum()
+        
+        loss = (g - g_obs_tensor).pow(2).mean()
+
         print("LOSS: ", loss.item())
-        
         loss.backward()
-        
         duration = (datetime.now() - current_time)
         
         optimizer.step()
         optimizer.zero_grad()
-
+        
+        
         if torch.isnan(loss):
-            plt.plot(loss_log)
+            plt.plot(loss_log, list(range(i)))
             plt.yscale("log")
             plt.savefig(model_path + '/loss.jpg')
             plt.close()
             return np.array(loss_log[-16:-1]).mean()
         else:
             loss_log.append(loss.item())
+            plt.plot(range(len(loss_log)), loss_log, )
+            plt.savefig(model_path + '/loss.jpg')
+            plt.close()
 
         # check for loss convergence
         min_idx = np.array(loss_log).argmin()

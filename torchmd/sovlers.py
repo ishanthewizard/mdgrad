@@ -4,6 +4,7 @@ from torchmd.tinydiffeq import RK4, FixedGridODESolver
 
 import torch 
 from torch import nn
+from tqdm import tqdm
 
 '''
     I need to think how to write generatic verlet update for both forward and adjoint integration 
@@ -160,7 +161,7 @@ def forward_nvt_update(func, t, dt, y):
         velocities = (velocities + 0.5 * dt * accel) / \
             (1 + 0.5 * dt * zeta)
         
-        # pdb.set_trace()
+
         result = (velocities - y[0], radii - y[1], zeta - y[2])
         return result
     elif len(y) == NUM_VAR * 2 + 2: # integrator in the backward call 
@@ -208,7 +209,7 @@ def forward_nvt_update(func, t, dt, y):
 
 
 
-def odeint(func, y0, t, rtol=1e-7, atol=1e-9, method=None, options=None):
+def odeint(func, y0, t, rtol=1e-7, atol=1e-9, method=None, options=None, show_tqdm=True):
 
     SOLVERS = {
     'rk4': RK4,
@@ -228,7 +229,7 @@ def odeint(func, y0, t, rtol=1e-7, atol=1e-9, method=None, options=None):
         method = 'dopri5'
 
     solver = SOLVERS[method](func, y0, rtol=rtol, atol=atol, **options)
-    solution = solver.integrate(t)
+    solution = solver.integrate(t, show_tqdm=show_tqdm)
     if tensor_input:
         solution = solution[0]
     return solution
@@ -266,7 +267,7 @@ class OdeintAdjointMethod(torch.autograd.Function):
         def augmented_dynamics(t, y_aug):
             # Dynamics of the original system augmented with
             # the adjoint wrt y, and an integrator wrt t and args.
-            #pdb.set_trace()
+
             y, adj_y = y_aug[:n_tensors], y_aug[n_tensors:2 * n_tensors]  # Ignore adj_time and adj_params.
 
             with torch.set_grad_enabled(True):
@@ -277,7 +278,6 @@ class OdeintAdjointMethod(torch.autograd.Function):
                 func_eval = func(t, y)
                 func_eval = (func_eval[0], func_eval[1], func_eval[2].unsqueeze(0))
                 #compute VJPs: -aT df/dt , -aT df/dz, and -aT df/dtheta
-                # pdb.set_trace()
                 vjp_t, *vjp_y_and_params = torch.autograd.grad(
                     func_eval, (t,) + y + f_params,
                     tuple(-adj_y_ for adj_y_ in adj_y), allow_unused=True, retain_graph=True
@@ -307,7 +307,7 @@ class OdeintAdjointMethod(torch.autograd.Function):
             #initial adjoint time is 0
             adj_time = torch.tensor(0.).to(t)
             time_vjps = []
-            for i in range(T - 1, 0, -1):
+            for i in tqdm(range(T - 1, 0, -1), desc="backwards"):
 
                 #get state at time i
                 ans_i = tuple(ans_[i] for ans_ in ans)
@@ -334,10 +334,10 @@ class OdeintAdjointMethod(torch.autograd.Function):
                 #define augmented state: (z, dL/dz_t, tau, dL/dtheta)
                 aug_y0 = (*ans_i, *adj_y, adj_time, adj_params)
                 #run augmented system backwards for one step
-                # pdb.set_trace()
+
                 aug_ans = odeint(
                     augmented_dynamics, aug_y0,
-                    torch.tensor([t[i], t[i - 1]]), rtol=rtol, atol=atol, method=method, options=options
+                    torch.tensor([t[i], t[i - 1]]), rtol=rtol, atol=atol, method=method, options=options, show_tqdm=False
                 )
             
                 # Unpack aug_ans.
@@ -353,7 +353,6 @@ class OdeintAdjointMethod(torch.autograd.Function):
                 adj_y = tuple(adj_y_ + grad_output_[i - 1] for adj_y_, grad_output_ in zip(adj_y, grad_output))
 
                 del aug_y0, aug_ans
-
             time_vjps.append(adj_time)
             time_vjps = torch.cat(time_vjps[::-1])
             #return gradients for all arguments:
