@@ -143,10 +143,10 @@ def forward_nvt_update(func, t, dt, y):
 
         # make full step in position 
         radii = y[1] + vel * dt + \
-            (accel - y[2] * vel) * (0.5 * dt ** 2)
+            (accel - y[2][:, None, None] * vel) * (0.5 * dt ** 2)
 
         # make half a step in velocity
-        velocities = y[0] + 0.5 * dt * (accel - y[2] * y[0])
+        velocities = y[0] + 0.5 * dt * (accel - y[2][:, None, None] * y[0])
 
         # make a half step in self.zeta
         zeta = y[2] +  0.5 * zeta_dot * dt
@@ -159,7 +159,7 @@ def forward_nvt_update(func, t, dt, y):
 
         # make another half step in velocity
         velocities = (velocities + 0.5 * dt * accel) / \
-            (1 + 0.5 * dt * zeta)
+            (1 + 0.5 * dt * zeta[:, None, None])
         
 
         result = (velocities - y[0], radii - y[1], zeta - y[2])

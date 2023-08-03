@@ -29,15 +29,15 @@ NAME = 'md17'
 SCHNET_PATH = 'md17-aspirin_1k_schnet'
 
 
-def plot_rdfs(bins, target_g, simulated_g, fname, path, tau):
+def plot_rdfs(bins, target_g, simulated_g, fname, path, tau, rdf_title):
     plt.title("epoch {}".format(fname))
-    plt.plot(bins, simulated_g.detach().cpu().numpy(), c='red', lw='3', label='sim.' )
+    plt.plot(bins, simulated_g.detach().cpu().numpy(), c='red', label='sim.' )
     plt.plot(bins, target_g, linewidth=2,linestyle='--', c='black', label='exp.')
     plt.legend()
     plt.xlabel("$\AA$")
     plt.ylabel("g(r)")
     # plt.ylim(0 , .6)
-    plt.savefig(path + f'/ch660_every1/rdf_plot{tau}.jpg', bbox_inches='tight')
+    plt.savefig(path + rdf_title, bbox_inches='tight')
     plt.show()
     plt.close()
 
@@ -110,11 +110,18 @@ def fit_rdf(suggestion_id, device, project_name):
 
     # initialize states with ASE # TODO: instead, load in your model DONE
     #initialize datasets
+
+
     train_dataset = LmdbDataset({'src': os.path.join(NAME, MOLECULE, SIZE, 'train')})
     # valid_dataset = LmdbDataset({'src': os.path.join(config['dataset']['src'], NAME, MOLECULE, SIZE, 'val')})
 
     #get first configuration from dataset
-    init_data = train_dataset.__getitem__(7)
+    np.random.randint(100)
+    
+    num_replicas = 1
+
+    samples = np.random.choice(np.arange(train_dataset.__len__()), num_replicas)
+    init_data_arr = [train_dataset.__getitem__(i) for i in samples]
 
 
     n_epochs = 1000  # number of epochs to train for
@@ -127,25 +134,29 @@ def fit_rdf(suggestion_id, device, project_name):
     dt = 0.5 * units.fs
     temp = 500* units.kB
     ttime =  20   #ttime is only used for NVT setup - it's not the total time
-    n_atoms =init_data['pos'].shape[0] 
+    n_atoms =init_data_arr[0]['pos'].shape[0] 
     targeEkin = 0.5 * (3.0 * n_atoms) * temp
     Q = 3.0 * n_atoms * temp * (ttime * dt)**2
     use_chain = False
-    rdf_skip = 1
+    rdf_skip = 10
+    rdf_title = f'/replicas/rdf_plot_{num_replicas}replicas{tau}t'
 
 
-    atoms = data_to_atoms(init_data)
-    system = System(atoms, device=device)
-    system.set_temperature(temp)
-    NL = NeighborList(natural_cutoffs(atoms), self_interaction=False)
-    NL.update(atoms)
-    bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
-    atom_types_list = list(set(atoms.get_chemical_symbols()))
-    atom_types = atoms.get_chemical_symbols()
-    type_to_index = {value: index for index, value in enumerate(atom_types_list)}
-    typeid = np.zeros(n_atoms, dtype=int)
-    for i, _type in enumerate(atom_types):
-        typeid[i] = type_to_index[_type]    
+    atoms_arr = [data_to_atoms(init_data) for init_data in init_data_arr]
+    systems_arr= [System(atoms, device=device) for atoms in atoms_arr]
+    [system.set_temperature(temp) for system in systems_arr]
+    # NL_arr = [NeighborList(natural_cutoffs(atoms), self_interaction=False) for atoms in atoms_arr]
+    # [NL_arr[i].update(atoms_arr[i]) for i in range(len(atoms_arr))]
+    # bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
+
+    # PURE OVITO STUFF 
+    # atom_types_list = list(set(atoms_arr[0].get_chemical_symbols()))
+    # atom_types = atoms_arr[0].get_chemical_symbols()
+    # type_to_index = {value: index for index, value in enumerate(atom_types_list)}
+    # typeid = np.zeros(n_atoms, dtype=int)
+    # for i, _type in enumerate(atom_types):
+    #     typeid[i] = type_to_index[_type]   
+    # END OVITO STUFF  
     try:
         device2 = torch.device(torch.cuda.current_device())
     except:
@@ -155,8 +166,9 @@ def fit_rdf(suggestion_id, device, project_name):
     model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='660', device=torch.device(device2))
  
 
-    atomic_nums = torch.Tensor(atoms.get_atomic_numbers()).to(torch.long).to(device2)
-    GNN = GNNPotentials(system, model, cutoff, atomic_nums )
+    atomic_nums = torch.Tensor(atoms_arr[0].get_atomic_numbers()).to(torch.long).to(device2).repeat(num_replicas)
+    batch = torch.arange(num_replicas).repeat_interleave(n_atoms).to(device2)
+    GNN = GNNPotentials(systems_arr[0], model, cutoff, atomic_nums, batch )
     model = GNN
     ovito_config = gsd.hoomd.open(name= f'{model_path}/sim_temp.gsd', mode='w')
 
@@ -164,27 +176,28 @@ def fit_rdf(suggestion_id, device, project_name):
     # define the equation of motion to propagate (the Integrater)
 
     diffeq = NoseHoover(model, 
-            system,
+            systems_arr,
             Q= Q, 
             T= temp,  
             targetEkin= targeEkin,
+            num_replicas=num_replicas,
             adjoint=True).to(device)
-    sim = Simulations(system, diffeq, method="MDsimNH", wrap=False)
+    sim = Simulations(systems_arr, diffeq, method="MDsimNH", wrap=False)
     if use_chain:
         diffeq = NoseHooverChain(model, 
-            system,
+            systems_arr[0],
             Q=50.0, 
             T=298.0 * units.kB,
             num_chains=5, 
             adjoint=True).to(device)
         # define simulator with 
-        sim = Simulations(system, diffeq, method="NH_verlet")
+        sim = Simulations(systems_arr, diffeq, method="NH_verlet")
 
 
 
 
     # initialize observable function 
-    obs = rdf(system, nbins, (start, end), width=.01 ) # initialize rdf function for the system
+    obs = rdf(systems_arr[0], nbins, (start, end), width=.01 ) # initialize rdf function for the system
 
 
 
@@ -212,16 +225,22 @@ def fit_rdf(suggestion_id, device, project_name):
         trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt)
         # download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config)
         # ovito_config.close()
-        v_t, q_t, pv_t = trajs 
-        _, bins, g = obs(q_t[::rdf_skip])
+        v_t, q_t, pv_t = trajs
+        # _, bins, g = obs(q_t[::rdf_skip, i])
+        del(v_t)
+        del(pv_t)
+        q_t_obs = torch.stack([obs(q_t[::rdf_skip, i, : , :])[2] for i in range(q_t.shape[1])])
+        # Now, let's average over all the rows for g (in the 99 dimension)
+        g = q_t_obs.mean(dim=0)
+
         g = g * .5
         if  i % 25 == 0:
-           plot_rdfs(xnew, g_obs, g, i, model_path, tau)
+           plot_rdfs(xnew, g_obs, g, i, model_path, tau, rdf_title)
 
         # Calculate the loss
         
         loss = (g - g_obs_tensor).pow(2).mean()
-
+        exit(1)
         print("LOSS: ", loss.item())
         loss.backward()
         duration = (datetime.now() - current_time)

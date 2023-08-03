@@ -29,13 +29,13 @@ class Simulations():
     """
     
     def __init__(self,
-                 system,
+                 systems_arr,
                   integrator,
                   wrap=True,
                   method="NH_verlet"):
 
-        self.system = system 
-        self.device = system.device
+        self.systems_arr = systems_arr 
+        self.device = systems_arr[0].device
         self.integrator = integrator
         self.solvemethod = method
         self.wrap = wrap
@@ -56,9 +56,9 @@ class Simulations():
 
     def update_states(self):
         if "positions" in self.log.keys():
-            self.system.set_positions(self.log['positions'][-1])
+            [system.set_positions(self.log['positions'][-1][i]) for i, system in enumerate(self.systems_arr)]
         if "velocities" in self.log.keys():
-            self.system.set_velocities(self.log['velocities'][-1])
+            [system.set_velocities(self.log['velocities'][-1][i]) for i, system in enumerate(self.systems_arr)]
 
     def get_check_point(self):
 
@@ -263,18 +263,18 @@ class NoseHooverChain(torch.nn.Module):
 
 
 class NoseHoover(torch.nn.Module):
-    def __init__(self, potentials, system, T, targetEkin, num_chains=2, Q=1.0, adjoint=True,
+    def __init__(self, potentials, systems_arr, T, targetEkin, num_replicas=1, Q=1.0, adjoint=True,
                 topology_update_freq=1):
         super().__init__()
         self.model = potentials 
-        self.system = system
-        self.device = system.device # should just use system.device throughout
-        self.mass = torch.Tensor(system.get_masses()).to(self.device)
+        self.systems_arr = systems_arr
+        self.device = systems_arr[0].device # should just use system.device throughout
+        self.mass = torch.Tensor(self.systems_arr[0].get_masses()[None, :, None]).to(self.device)
         self.T = T # in energy unit(eV)
-        self.N_dof = self.mass.shape[0] * system.dim
+        self.N_dof = self.mass.shape[0] * systems_arr[0].dim
         self.Q = Q
         # self.Q = torch.Tensor([self.Q]).to(self.device)
-        self.dim = system.dim
+        self.dim = systems_arr[0].dim
         self.adjoint = adjoint
         self.state_keys = ['velocities', 'positions', 'baths']
         self.topology_update_freq = topology_update_freq
@@ -299,25 +299,25 @@ class NoseHoover(torch.nn.Module):
             if self.adjoint:
                 q.requires_grad = True
             
-            p = v * self.mass[:, None]
+            p = v * self.mass
 
-            sys_ke = 0.5 * (p.pow(2) / self.mass[:, None]).sum() 
-            
+            sys_ke = 0.5 * (p.pow(2) / self.mass).sum([1,2]) 
+
             self.update_topology(q)           
             
             u = self.model(q)
             f = -compute_grad(inputs=q, output=u.sum(-1))
-            accel = f / self.mass[:, None]
+            accel = f / self.mass
         a = (accel, v,  1/self.Q * (sys_ke - self.targetEkin))
 
         return (accel, v,  (1/self.Q * (sys_ke - self.targetEkin)))
 
     def get_inital_states(self, wrap=True):
         states = [
-                self.system.get_velocities(), 
-                self.system.get_positions(), 
-                [0.0]]
-        states = [torch.Tensor(var).to(self.system.device) for var in states]
+                [system.get_velocities() for system in self.systems_arr], 
+                [system.get_positions() for system in self.systems_arr], 
+                [0.0 for i in range(len(self.systems_arr))]]
+        states = [torch.Tensor(var).to(self.device) for var in states]
         return states
         
 
