@@ -29,8 +29,8 @@ NAME = 'md17'
 SCHNET_PATH = 'md17-aspirin_1k_schnet'
 
 
-def plot_rdfs(bins, target_g, simulated_g, fname, path, tau, rdf_title):
-    plt.title("epoch {}".format(fname))
+def plot_rdfs(bins, target_g, simulated_g, fname, path, tau, rdf_title, loss=-1):
+    plt.title(f'epoch {fname}; loss: {loss}')
     plt.plot(bins, simulated_g.detach().cpu().numpy(), c='red', label='sim.' )
     plt.plot(bins, target_g, linewidth=2,linestyle='--', c='black', label='exp.')
     plt.legend()
@@ -118,7 +118,7 @@ def fit_rdf(suggestion_id, device, project_name):
     #get first configuration from dataset
     np.random.randint(100)
     
-    num_replicas = 1
+    num_replicas = 99
 
     samples = np.random.choice(np.arange(train_dataset.__len__()), num_replicas)
     init_data_arr = [train_dataset.__getitem__(i) for i in samples]
@@ -130,7 +130,7 @@ def fit_rdf(suggestion_id, device, project_name):
     tau = 100 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
     end = 10 # end of rdf range
-    lr_initial = .0001 # learning rate passed to optim
+    lr_initial = .001 # learning rate passed to optim
     dt = 0.5 * units.fs
     temp = 500* units.kB
     ttime =  20   #ttime is only used for NVT setup - it's not the total time
@@ -139,7 +139,9 @@ def fit_rdf(suggestion_id, device, project_name):
     Q = 3.0 * n_atoms * temp * (ttime * dt)**2
     use_chain = False
     rdf_skip = 10
-    rdf_title = f'/replicas/rdf_plot_{num_replicas}replicas{tau}t'
+    checkpoint_epoch = 10
+    # rdf_title = f'/replicas_ch{checkpoint_epoch}/rdf_plot_{num_replicas}replicas_{tau}t'
+    rdf_title = 'tester'
 
 
     atoms_arr = [data_to_atoms(init_data) for init_data in init_data_arr]
@@ -163,7 +165,7 @@ def fit_rdf(suggestion_id, device, project_name):
         device2 = "cpu"
 
     
-    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch='660', device=torch.device(device2))
+    model, config = load_schnet_model(path= SCHNET_PATH, ckpt_epoch=checkpoint_epoch, device=torch.device(device2))
  
 
     atomic_nums = torch.Tensor(atoms_arr[0].get_atomic_numbers()).to(torch.long).to(device2).repeat(num_replicas)
@@ -230,18 +232,20 @@ def fit_rdf(suggestion_id, device, project_name):
         del(v_t)
         del(pv_t)
         q_t_obs = torch.stack([obs(q_t[::rdf_skip, i, : , :])[2] for i in range(q_t.shape[1])])
+        #TODO: replace with vmap???
+
         # Now, let's average over all the rows for g (in the 99 dimension)
         g = q_t_obs.mean(dim=0)
 
         g = g * .5
+        loss = (g - g_obs_tensor).pow(2).mean()
+        print("LOSS: ", loss.item())
         if  i % 25 == 0:
-           plot_rdfs(xnew, g_obs, g, i, model_path, tau, rdf_title)
+           plot_rdfs(xnew, g_obs, g, i, model_path, tau, rdf_title, loss=loss.item())
 
         # Calculate the loss
         
-        loss = (g - g_obs_tensor).pow(2).mean()
-        exit(1)
-        print("LOSS: ", loss.item())
+    
         loss.backward()
         duration = (datetime.now() - current_time)
         

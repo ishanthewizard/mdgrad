@@ -262,21 +262,20 @@ class OdeintAdjointMethod(torch.autograd.Function):
         #adj_y  - adjoint sensitivities (dL/dy_t) - total derivatives
         #adj_params - (dL/dtheta)
         #grad_output - (partial L / partial y_t) - intermediate loss dependencies (not taking into account effect on future timesteps)
-
+        # pdb.set_trace()
         # TODO: use a nn.Module and call odeint_adjoint to implement higher order derivatives.
         def augmented_dynamics(t, y_aug):
             # Dynamics of the original system augmented with
             # the adjoint wrt y, and an integrator wrt t and args.
 
             y, adj_y = y_aug[:n_tensors], y_aug[n_tensors:2 * n_tensors]  # Ignore adj_time and adj_params.
-
             with torch.set_grad_enabled(True):
                 t = t.to(y[0].device).detach().requires_grad_(True)
                 y = tuple(y_.detach().requires_grad_(True) for y_ in y) # get state variables 
 
                 #run one MD step to get f
                 func_eval = func(t, y)
-                func_eval = (func_eval[0], func_eval[1], func_eval[2].unsqueeze(0))
+                # func_eval = (func_eval[0], func_eval[1], func_eval[2].unsqueeze(0))
                 #compute VJPs: -aT df/dt , -aT df/dz, and -aT df/dtheta
                 vjp_t, *vjp_y_and_params = torch.autograd.grad(
                     func_eval, (t,) + y + f_params,
@@ -357,6 +356,8 @@ class OdeintAdjointMethod(torch.autograd.Function):
             time_vjps = torch.cat(time_vjps[::-1])
             #return gradients for all arguments:
             #y0, func, t, flat_params, rtol, atol, method, options
+            pdb.set_trace()
+            
             return (*adj_y, None, time_vjps, adj_params, None, None, None, None, None)
 
 
