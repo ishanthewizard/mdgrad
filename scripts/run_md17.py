@@ -37,7 +37,22 @@ def plot_rdfs(bins, target_g, simulated_g, fname, path, tau, rdf_title, loss=-1)
     plt.xlabel("$\AA$")
     plt.ylabel("g(r)")
     # plt.ylim(0 , .6)
-    plt.savefig(path + rdf_title, bbox_inches='tight')
+    plt.savefig(path + '/' + rdf_title, bbox_inches='tight')
+    plt.show()
+    plt.close()
+def plot_rdfs2(bins, target_g, simulated_g, imp_gt, imp_sim, fname, path, tau, rdf_title, loss=-1):
+    
+    # plt.plot(bins, simulated_g.detach().cpu().numpy(), c='red', label='sim.' )
+    # plt.plot(bins, target_g, linewidth=2,linestyle='--', c='black', label='exp.')
+    imp_loss = (imp_gt - imp_sim).pow(2).mean()
+    plt.plot(bins, imp_gt.detach().cpu().numpy(), label='imp gt')
+    plt.plot(bins, imp_sim.detach().cpu().numpy(), label= 'imp sim' )
+    plt.title(f'loss: {loss}, imp_loss: {imp_loss} ')
+    plt.legend()
+    plt.xlabel("$\AA$")
+    plt.ylabel("g(r)")
+    # plt.ylim(0 , .6)
+    plt.savefig(path + '/' + rdf_title, bbox_inches='tight')
     plt.show()
     plt.close()
 
@@ -60,6 +75,7 @@ def find_hr_from_file(molecule: str, size: str, n_bins, start, end):
     gt_traj = torch.FloatTensor(gt_data.f.R)
     gt_atomicnums = torch.FloatTensor(gt_data.f.z)
     hist_gt = get_hr(gt_traj, bins)
+    hist_gt = 100*hist_gt/ hist_gt.sum()
     return hist_gt
     # compute h(r) for simulated trajectory
 
@@ -67,6 +83,7 @@ def find_hr_from_file(molecule: str, size: str, n_bins, start, end):
 def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, device = "cpu", from_pretrained=True):
     
     cname = 'best_checkpoint.pt' if ckpt_epoch == -1 else f"checkpoint{ckpt_epoch}.pt"
+
     ckpt_and_config_path = os.path.join(path, "checkpoints", cname)
     schnet_config = torch.load(ckpt_and_config_path, map_location=torch.device("cpu"))["config"]
     if num_interactions: #manual override
@@ -127,7 +144,7 @@ def fit_rdf(suggestion_id, device, project_name):
     n_epochs = 1000  # number of epochs to train for
     cutoff = 15 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 100 # this is the number of timesteps, idk why it's called tau
+    tau = 300 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
     end = 10 # end of rdf range
     lr_initial = .001 # learning rate passed to optim
@@ -141,7 +158,8 @@ def fit_rdf(suggestion_id, device, project_name):
     rdf_skip = 10
     checkpoint_epoch = 10
     # rdf_title = f'/replicas_ch{checkpoint_epoch}/rdf_plot_{num_replicas}replicas_{tau}t'
-    rdf_title = 'tester'
+    rdf_title = f'tester'
+    reset_each_epoch = True
 
 
     atoms_arr = [data_to_atoms(init_data) for init_data in init_data_arr]
@@ -219,12 +237,20 @@ def fit_rdf(suggestion_id, device, project_name):
 
     # Convert `g_obs` to a PyTorch tensor and move it to the same device as `g`
     g_obs_tensor = torch.from_numpy(g_obs).to(device)
+    implicit_gt_obs = torch.load('implicit_obs')
+    implicit_sim_obs = torch.load('implicit_sim')
+    print("DIFFERENCE:", (g_obs_tensor - implicit_gt_obs).pow(2).sum())
     
     print("Training for {} epochs".format(n_epochs))
     for i in range(0, n_epochs):
         current_time = datetime.now() 
-        
-        trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt)
+        if reset_each_epoch:
+            data = [train_dataset.__getitem__(i) for i in samples]
+            [system.set_positions(data[i].pos.cpu().detach().numpy()) for i,  system in enumerate(systems_arr)] 
+
+
+            
+        trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt, restart=reset_each_epoch, normal=True)
         # download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config)
         # ovito_config.close()
         v_t, q_t, pv_t = trajs
@@ -237,16 +263,18 @@ def fit_rdf(suggestion_id, device, project_name):
         # Now, let's average over all the rows for g (in the 99 dimension)
         g = q_t_obs.mean(dim=0)
 
-        g = g * .5
+
         loss = (g - g_obs_tensor).pow(2).mean()
         print("LOSS: ", loss.item())
         if  i % 25 == 0:
-           plot_rdfs(xnew, g_obs, g, i, model_path, tau, rdf_title, loss=loss.item())
+        #    plot_rdfs(xnew, g_obs, g, i, model_path, tau, rdf_title, loss=loss.item())
+           plot_rdfs2(xnew, g_obs, g, implicit_gt_obs, implicit_sim_obs, i, model_path, tau, rdf_title, loss=loss.item())
 
         # Calculate the loss
         
-    
-        loss.backward()
+        pdb.set_trace()
+        results = loss.backward()
+        
         duration = (datetime.now() - current_time)
         
         optimizer.step()
@@ -322,4 +350,4 @@ def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config):
             ovito_config.append(s)
 
 
-fit_rdf("123", "cuda", "test_proj")
+fit_rdf("fix_rdf_10", "cuda", "adj_vs_implicit")

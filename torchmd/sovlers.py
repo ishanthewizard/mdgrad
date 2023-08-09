@@ -5,6 +5,7 @@ from torchmd.tinydiffeq import RK4, FixedGridODESolver
 import torch 
 from torch import nn
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 '''
     I need to think how to write generatic verlet update for both forward and adjoint integration 
@@ -262,7 +263,6 @@ class OdeintAdjointMethod(torch.autograd.Function):
         #adj_y  - adjoint sensitivities (dL/dy_t) - total derivatives
         #adj_params - (dL/dtheta)
         #grad_output - (partial L / partial y_t) - intermediate loss dependencies (not taking into account effect on future timesteps)
-        # pdb.set_trace()
         # TODO: use a nn.Module and call odeint_adjoint to implement higher order derivatives.
         def augmented_dynamics(t, y_aug):
             # Dynamics of the original system augmented with
@@ -306,6 +306,9 @@ class OdeintAdjointMethod(torch.autograd.Function):
             #initial adjoint time is 0
             adj_time = torch.tensor(0.).to(t)
             time_vjps = []
+            adj_p_norms = []
+            adj_q_norms = []
+            adj_z_norms = []
             for i in tqdm(range(T - 1, 0, -1), desc="backwards"):
 
                 #get state at time i
@@ -351,13 +354,67 @@ class OdeintAdjointMethod(torch.autograd.Function):
                 #adjust the adjoint in the direction of partial L/partial z_{i-1}
                 adj_y = tuple(adj_y_ + grad_output_[i - 1] for adj_y_, grad_output_ in zip(adj_y, grad_output))
 
+
+                adj_p_norms.append(adj_y[0].norm(dim=(-2,-1)).cpu().detach().numpy())
+                adj_q_norms.append(adj_y[1].norm(dim=(-2,-1)).cpu().detach().numpy())
+                adj_z_norms.append(torch.abs(adj_y[2]).cpu().detach().numpy() )
                 del aug_y0, aug_ans
             time_vjps.append(adj_time)
             time_vjps = torch.cat(time_vjps[::-1])
             #return gradients for all arguments:
             #y0, func, t, flat_params, rtol, atol, method, options
-            pdb.set_trace()
             
+            # Plot the reversed array
+
+            # Assume that adj_p_norms, adj_q_norms, and adj_z_norms are defined elsewhere
+            # Example:
+            # adj_p_norms = [np.random.rand(10) for _ in range(99)]
+
+            # Create a figure and 3 subplots
+            fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+
+            # Iterate through all the replicas and plot them
+            for replica in range(len(adj_p_norms[0])):
+                # Extract the values for the specific replica across all timesteps
+                p_values = [timestep[replica] for timestep in adj_p_norms]
+                q_values = [timestep[replica] for timestep in adj_q_norms]
+                z_values = [timestep[replica] for timestep in adj_z_norms]
+                
+                # Plot these values against the timestep
+                axs[0].plot(p_values, label=f'Replica {replica}')
+                axs[1].plot(q_values, label=f'Replica {replica}')
+                axs[2].plot(z_values, label=f'Replica {replica}')
+
+            # Adding labels
+            axs[0].set_title('P Norms')
+            axs[0].set_xlabel('Timestep')
+            axs[0].set_ylabel('Norm')
+            axs[0].set_yscale('log')
+
+            axs[1].set_title('Q Norms')
+            axs[1].set_xlabel('Timestep')
+            axs[1].set_ylabel('Norm')
+            axs[1].set_yscale('log')
+
+            axs[2].set_title('Z Norms')
+            axs[2].set_xlabel('Timestep')
+            axs[2].set_ylabel('Norm')
+            axs[2].set_yscale('log')
+
+            # Optionally add a legend
+            # axs[0].legend()
+            # axs[1].legend()
+            # axs[2].legend()
+
+            # Adjust the layout
+            plt.tight_layout()
+
+            # Save to file
+            plt.savefig('adjoints.png')
+            plt.close()
+
+
+            # Save the plot as "adjoints.png" in the current working directory
             return (*adj_y, None, time_vjps, adj_params, None, None, None, None, None)
 
 

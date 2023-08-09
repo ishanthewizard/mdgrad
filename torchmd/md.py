@@ -73,10 +73,10 @@ class Simulations():
         else:
             raise ValueError("No log available")
         
-    def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1):
+    def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1, restart=False, normal=False):
         # steps is the number of timesteps, frequency is related to how much you log
-        if self.log['positions'] == []:
-            states = self.integrator.get_inital_states(self.wrap)
+        if self.log['positions'] == [] or restart:
+            states = self.integrator.get_inital_states(self.wrap, normal=normal)
         else:
             states = self.get_check_point()
 
@@ -312,12 +312,14 @@ class NoseHoover(torch.nn.Module):
 
         return (accel, v,  (1/self.Q * (sys_ke - self.targetEkin)))
 
-    def get_inital_states(self, wrap=True):
+    def get_inital_states(self, wrap=True, normal=False):
         states = [
                 [system.get_velocities() for system in self.systems_arr], 
                 [system.get_positions() for system in self.systems_arr], 
                 [0.0 for i in range(len(self.systems_arr))]]
         states = [torch.Tensor(var).to(self.device) for var in states]
+        if normal:
+            states[1] = states[1] + torch.normal(torch.zeros_like(states[0]), .05)
         return states
         
 
