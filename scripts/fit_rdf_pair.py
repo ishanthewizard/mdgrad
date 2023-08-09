@@ -16,7 +16,7 @@ from torchmd.potentials import ExcludedVolume, LennardJones, LJFamily,  pairMLP
 from torchmd.md import NoseHooverChain 
 from torchmd.observable import rdf, vacf
 from torchmd.md import Simulations
-from data import pair_data_dict, exp_rdf_data_dict
+from scripts.data_del import pair_data_dict, exp_rdf_data_dict
 from plot import *
 import matplotlib.pyplot as plt
 
@@ -46,7 +46,7 @@ gaussian_dict = {'tiny': 16,
                'mid': 64, 
                'high': 128}
 
-from data import get_exp_rdf
+from scripts.data_del import get_exp_rdf
 
 def plot_vacf(vacf_sim, vacf_target, fn, path, dt=0.01, save_data=False):
 

@@ -144,7 +144,7 @@ def fit_rdf(suggestion_id, device, project_name):
     n_epochs = 1000  # number of epochs to train for
     cutoff = 15 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 300 # this is the number of timesteps, idk why it's called tau
+    tau = 50 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
     end = 10 # end of rdf range
     lr_initial = .001 # learning rate passed to optim
@@ -272,7 +272,7 @@ def fit_rdf(suggestion_id, device, project_name):
 
         # Calculate the loss
         
-        pdb.set_trace()
+
         results = loss.backward()
         
         duration = (datetime.now() - current_time)
@@ -350,4 +350,4 @@ def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config):
             ovito_config.append(s)
 
 
-fit_rdf("fix_rdf_10", "cuda", "adj_vs_implicit")
+fit_rdf("fix_rdf_10", "cuda", "test_cleanup")
