@@ -106,6 +106,9 @@ def load_schnet_model(path = None, ckpt_epoch = -1, num_interactions = None, dev
         
     return model, schnet_config["model_attributes"] 
 
+
+
+
 def data_to_atoms(data):
     numbers = data.atomic_numbers
     positions = data.pos
@@ -119,7 +122,7 @@ def data_to_atoms(data):
 
 
 
-def fit_rdf(suggestion_id, device, project_name):
+def fit_rdf(project_name, suggestion_id, device,):
     model_path = '{}/{}'.format(project_name, suggestion_id)
     # Remove the directory if it already exists
     if not os.path.exists(model_path):
@@ -135,19 +138,19 @@ def fit_rdf(suggestion_id, device, project_name):
     #get first configuration from dataset
     np.random.randint(100)
     
-    num_replicas = 99
+    num_replicas = 96
 
     samples = np.random.choice(np.arange(train_dataset.__len__()), num_replicas)
     init_data_arr = [train_dataset.__getitem__(i) for i in samples]
 
 
-    n_epochs = 1000  # number of epochs to train for
+    n_epochs = 100  # number of epochs to train for
     cutoff = 15 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 50 # this is the number of timesteps, idk why it's called tau
+    tau = 1000 # this is the number of timesteps, idk why it's called tau
     start = 1e-6 # start of rdf range
     end = 10 # end of rdf range
-    lr_initial = .001 # learning rate passed to optim
+    lr_initial = .0005 # learning rate passed to optim
     dt = 0.5 * units.fs
     temp = 500* units.kB
     ttime =  20   #ttime is only used for NVT setup - it's not the total time
@@ -165,17 +168,20 @@ def fit_rdf(suggestion_id, device, project_name):
     atoms_arr = [data_to_atoms(init_data) for init_data in init_data_arr]
     systems_arr= [System(atoms, device=device) for atoms in atoms_arr]
     [system.set_temperature(temp) for system in systems_arr]
-    # NL_arr = [NeighborList(natural_cutoffs(atoms), self_interaction=False) for atoms in atoms_arr]
-    # [NL_arr[i].update(atoms_arr[i]) for i in range(len(atoms_arr))]
-    # bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
 
     # PURE OVITO STUFF 
-    # atom_types_list = list(set(atoms_arr[0].get_chemical_symbols()))
-    # atom_types = atoms_arr[0].get_chemical_symbols()
-    # type_to_index = {value: index for index, value in enumerate(atom_types_list)}
-    # typeid = np.zeros(n_atoms, dtype=int)
-    # for i, _type in enumerate(atom_types):
-    #     typeid[i] = type_to_index[_type]   
+    NL = NeighborList(natural_cutoffs(atoms_arr[0]), self_interaction=False)
+    NL.update(atoms_arr[0])
+    bonds = torch.tensor(NL.get_connectivity_matrix().todense().nonzero()).to(device).T
+
+    
+    atom_types_list = list(set(atoms_arr[0].get_chemical_symbols()))
+    atom_types = atoms_arr[0].get_chemical_symbols()
+    type_to_index = {value: index for index, value in enumerate(atom_types_list)}
+    typeid = np.zeros(n_atoms, dtype=int)
+    for i, _type in enumerate(atom_types):
+        typeid[i] = type_to_index[_type]   
+
     # END OVITO STUFF  
     try:
         device2 = torch.device(torch.cuda.current_device())
@@ -237,12 +243,12 @@ def fit_rdf(suggestion_id, device, project_name):
 
     # Convert `g_obs` to a PyTorch tensor and move it to the same device as `g`
     g_obs_tensor = torch.from_numpy(g_obs).to(device)
-    implicit_gt_obs = torch.load('implicit_obs')
-    implicit_sim_obs = torch.load('implicit_sim')
+    implicit_gt_obs = torch.load('implicit_data/implicit_obs')
+    implicit_sim_obs = torch.load('implicit_data/implicit_sim')
     print("DIFFERENCE:", (g_obs_tensor - implicit_gt_obs).pow(2).sum())
     
     print("Training for {} epochs".format(n_epochs))
-    for i in range(0, n_epochs):
+    for epoch in range(0, n_epochs):
         current_time = datetime.now() 
         if reset_each_epoch:
             data = [train_dataset.__getitem__(i) for i in samples]
@@ -251,8 +257,8 @@ def fit_rdf(suggestion_id, device, project_name):
 
             
         trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt, restart=reset_each_epoch, normal=True)
-        # download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config)
-        # ovito_config.close()
+        download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, epoch*tau)
+        
         v_t, q_t, pv_t = trajs
         # _, bins, g = obs(q_t[::rdf_skip, i])
         del(v_t)
@@ -264,11 +270,17 @@ def fit_rdf(suggestion_id, device, project_name):
         g = q_t_obs.mean(dim=0)
 
 
+        if not os.path.exists(model_path + '/adjoint_meanRDFs'):
+            os.makedirs(model_path + '/adjoint_meanRDFs')
+        torch.save(g, model_path + f'/adjoint_meanRDFs/RDFepoch{epoch}')
+
         loss = (g - g_obs_tensor).pow(2).mean()
         print("LOSS: ", loss.item())
-        if  i % 25 == 0:
+        loss_log.append(loss.item())
+        np.save(model_path + '/adjointRDFloss.npy', np.array(loss_log))
+        # if  epoch % 25 == 0:
         #    plot_rdfs(xnew, g_obs, g, i, model_path, tau, rdf_title, loss=loss.item())
-           plot_rdfs2(xnew, g_obs, g, implicit_gt_obs, implicit_sim_obs, i, model_path, tau, rdf_title, loss=loss.item())
+        #    plot_rdfs2(xnew, g_obs, g, implicit_gt_obs, implicit_sim_obs, epoch, model_path, tau, rdf_title, loss=loss.item())
 
         # Calculate the loss
         
@@ -282,31 +294,34 @@ def fit_rdf(suggestion_id, device, project_name):
         
         
         if torch.isnan(loss):
-            plt.plot(loss_log, list(range(i)))
+            plt.plot(loss_log, list(range(epoch)))
             plt.yscale("log")
             plt.savefig(model_path + '/loss.jpg')
             plt.close()
             return np.array(loss_log[-16:-1]).mean()
         else:
-            loss_log.append(loss.item())
-            plt.plot(range(len(loss_log)), loss_log, )
-            plt.savefig(model_path + '/loss.jpg')
+            plt.plot(range(len(loss_log)), loss_log, label="adjoint_loss")
+            if os.path.isfile(model_path + '/implicit_RDFloss.npy'):
+                implicit_loss = np.load(model_path + '/implicit_RDFloss.npy')
+                plt.plot(range(len(implicit_loss)), implicit_loss, label="implicit loss")
+            plt.yscale("log")
+            plt.title("Loss vs Epoch")
+            plt.xlabel("Epoch")
+            plt.ylabel("Loss")
+            plt.legend()
+            plt.savefig(model_path + '/loss.jpg', bbox_inches='tight')
             plt.close()
 
         # check for loss convergence
         min_idx = np.array(loss_log).argmin()
 
-        if i - min_idx >= 125:
+        if epoch - min_idx >= 125:
             print("converged")
             break
+    ovito_config.close()
 
-    plt.plot(loss_log)
-    plt.yscale("log")
-    plt.savefig(model_path + '/loss.jpg', bbox_inches='tight')
-    plt.close()
-
-    train_traj = [var[1] for var in diffeq.traj]
-    save_traj(system, train_traj, model_path + '/train.xyz', skip=10)
+    # train_traj = [var[1] for var in diffeq.traj]
+    # save_traj(system, train_traj, model_path + '/train.xyz', skip=10)
 
 def save_traj(system, traj, fname, skip=10):
     atoms_list = []
@@ -324,19 +339,19 @@ def detach_numpy(tensor):
         return np.array(tensor.storage().tolist()).reshape(tensor.shape)
     return tensor.numpy()
 
-def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config):
+def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, absolute_step):
         tau = trajs[0].shape[0]
         for i in range(tau):
-            radii = trajs[1][i]
-            velocities = trajs[0][i]
-            n_atoms = trajs[0].shape[1]
+            radii = trajs[1][i][0]
+            velocities = trajs[0][i][0]
+            n_atoms = trajs[0].shape[2]
             # Particle positions, velocities, diameter
             partpos = detach_numpy(radii).tolist()
             velocities = detach_numpy(velocities).tolist()
             diameter = (10*0.08*np.ones((n_atoms,))).tolist()
             # Now make gsd file
             s = gsd.hoomd.Frame()
-            s.configuration.step = i
+            s.configuration.step = absolute_step + i
             s.particles.N= n_atoms
             s.particles.position = partpos
             s.particles.velocity = velocities
@@ -350,4 +365,4 @@ def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config):
             ovito_config.append(s)
 
 
-fit_rdf("fix_rdf_10", "cuda", "test_cleanup")
+fit_rdf("adj_vs_implicit_final", "aspirin_1000tau", "cuda")

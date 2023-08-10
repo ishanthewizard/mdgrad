@@ -319,7 +319,7 @@ class NoseHoover(torch.nn.Module):
                 [0.0 for i in range(len(self.systems_arr))]]
         states = [torch.Tensor(var).to(self.device) for var in states]
         if normal:
-            states[1] = states[1] + torch.normal(torch.zeros_like(states[0]), .05)
+            states[1] = states[1] + torch.normal(torch.zeros_like(states[0]), 0)
         return states
         
 
