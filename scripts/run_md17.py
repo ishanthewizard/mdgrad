@@ -9,6 +9,7 @@ import json
 import pdb;
 import shutil
 from torch_geometric.nn import SchNet
+from torch.nn.utils import clip_grad_norm_
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -23,10 +24,10 @@ from lmdb_dataset import LmdbDataset
 import gsd.hoomd
 # optional. nglview for visualization
 # import nglview as nv
-MOLECULE = 'aspirin'
+MOLECULE = 'naphthalene'
 SIZE = '1k'
 NAME = 'md17'
-SCHNET_PATH = 'md17-aspirin_1k_schnet'
+SCHNET_PATH = f'/data/ishan-amin/MODELPATH/schnet/md17-{MOLECULE}_{SIZE}_schnet'
 
 
 def plot_rdfs(bins, target_g, simulated_g, fname, path, tau, rdf_title, loss=-1):
@@ -147,10 +148,13 @@ def fit_rdf(project_name, suggestion_id, device,):
     n_epochs = 100  # number of epochs to train for
     cutoff = 15 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    tau = 1000 # this is the number of timesteps, idk why it's called tau
+    steps = 90
+    eq_steps = 10
+    tau = steps + eq_steps # this is the number of timesteps, idk why it's called tau
+    
     start = 1e-6 # start of rdf range
     end = 10 # end of rdf range
-    lr_initial = .0005 # learning rate passed to optim
+    lr_initial = .0002 # learning rate passed to optim
     dt = 0.5 * units.fs
     temp = 500* units.kB
     ttime =  20   #ttime is only used for NVT setup - it's not the total time
@@ -160,14 +164,19 @@ def fit_rdf(project_name, suggestion_id, device,):
     use_chain = False
     rdf_skip = 10
     checkpoint_epoch = 10
+    clip_value = 0.1
+    ic_stddev = 0.05
     # rdf_title = f'/replicas_ch{checkpoint_epoch}/rdf_plot_{num_replicas}replicas_{tau}t'
     rdf_title = f'tester'
-    reset_each_epoch = True
+
+    reset_each_mega_epoch = True
+    mega_epoch_len = 5
 
 
     atoms_arr = [data_to_atoms(init_data) for init_data in init_data_arr]
     systems_arr= [System(atoms, device=device) for atoms in atoms_arr]
     [system.set_temperature(temp) for system in systems_arr]
+    vels = [system.get_velocities() for system in systems_arr]
 
     # PURE OVITO STUFF 
     NL = NeighborList(natural_cutoffs(atoms_arr[0]), self_interaction=False)
@@ -231,7 +240,7 @@ def fit_rdf(project_name, suggestion_id, device,):
 
     xnew = np.linspace(start, end, nbins) # probably just the rdf bins
     # get experimental rdf TODO: replace 
-    g_obs = find_hr_from_file("aspirin", "1k", n_bins=nbins, start=start, end=end)
+    g_obs = find_hr_from_file(MOLECULE, SIZE, n_bins=nbins, start=start, end=end)
     # count_obs, g_obs = get_exp_rdf(data, nbins, (start, end), obs)
 
     # define optimizer 
@@ -248,22 +257,37 @@ def fit_rdf(project_name, suggestion_id, device,):
     print("DIFFERENCE:", (g_obs_tensor - implicit_gt_obs).pow(2).sum())
     
     print("Training for {} epochs".format(n_epochs))
+    # pdb.set_trace()
+    curr_init_positions = [system.get_positions() + np.random.normal(0, .05, system.get_positions().shape) for system in systems_arr]
+    curr_init_vels = [system.get_velocities() for system in systems_arr]
     for epoch in range(0, n_epochs):
+        print("EPOCH: ", epoch)
         current_time = datetime.now() 
-        if reset_each_epoch:
-            data = [train_dataset.__getitem__(i) for i in samples]
-            [system.set_positions(data[i].pos.cpu().detach().numpy()) for i,  system in enumerate(systems_arr)] 
 
-
-            
-        trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt, restart=reset_each_epoch, normal=True)
-        download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, epoch*tau)
+        # if you are in the same mega epoch, use the same initial condition
+        if epoch == 0 or  epoch % mega_epoch_len != 0:
+            [system.set_positions(curr_init_positions[i]) for i, system in enumerate(systems_arr)]
+            [system.set_velocities(curr_init_vels[i]) for i, system in enumerate(systems_arr)]
+        # if you are in a different mega epoch, you need to 
+        elif reset_each_mega_epoch:
+            samples = np.random.choice(np.arange(train_dataset.__len__()), num_replicas)
+            data_arr = [train_dataset.__getitem__(i) for i in samples]
+            for data in data_arr:
+                data.pos += torch.normal(torch.zeros_like(data.pos), ic_stddev) 
+            [system.set_positions(data_arr[i].pos.cpu().detach().numpy()) for i,  system in enumerate(systems_arr)] 
+            [system.set_temperature(temp) for system in systems_arr]
+            curr_init_positions = [system.get_positions() for system in systems_arr ]
+            curr_init_vels = [system.get_velocities() for system in systems_arr]
+        
+        restart = epoch != 0 and reset_each_mega_epoch and epoch % mega_epoch_len == 0
+        trajs = sim.simulate(steps=tau, frequency=int(tau), dt = dt, restart=True)
+        # download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, epoch*tau)
         
         v_t, q_t, pv_t = trajs
         # _, bins, g = obs(q_t[::rdf_skip, i])
         del(v_t)
         del(pv_t)
-        q_t_obs = torch.stack([obs(q_t[::rdf_skip, i, : , :])[2] for i in range(q_t.shape[1])])
+        q_t_obs = torch.stack([obs(q_t[eq_steps::rdf_skip, i, : , :])[2] for i in range(q_t.shape[1])])
         #TODO: replace with vmap???
 
         # Now, let's average over all the rows for g (in the 99 dimension)
@@ -289,6 +313,7 @@ def fit_rdf(project_name, suggestion_id, device,):
         
         duration = (datetime.now() - current_time)
         
+        clip_grad_norm_(diffeq.parameters(), clip_value)
         optimizer.step()
         optimizer.zero_grad()
         
@@ -358,6 +383,7 @@ def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, abso
             s.particles.diameter = diameter
             s.configuration.box=[10.0, 10.0, 10.0,0,0,0]
             #extract bond and atom type information
+            # pdb.set_trace()
             s.bonds.N =  bonds.shape[0]
             s.bonds.types = atom_types_list
             s.bonds.typeid = typeid
@@ -365,4 +391,4 @@ def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, abso
             ovito_config.append(s)
 
 
-fit_rdf("adj_vs_implicit_final", "aspirin_1000tau", "cuda")
+fit_rdf("adj_vs_implicit_final", "naphthalene_100tau", "cuda")

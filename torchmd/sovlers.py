@@ -413,6 +413,8 @@ class OdeintAdjointMethod(torch.autograd.Function):
             plt.savefig('adjoints.png')
             plt.close()
 
+            print("ADJ_PARAMS_NORM:", adj_params.norm())
+
 
             # Save the plot as "adjoints.png" in the current working directory
             return (*adj_y, None, time_vjps, adj_params, None, None, None, None, None)

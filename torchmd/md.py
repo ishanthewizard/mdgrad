@@ -8,7 +8,7 @@ from ase.neighborlist import natural_cutoffs, NeighborList
 from torchmd.sovlers import odeint_adjoint, odeint
 from ase.geometry import wrap_positions
 import gsd
-
+from utils import distance_pbc
 '''
     Here contains object for simulation and computing the equation of state
 '''
@@ -73,12 +73,22 @@ class Simulations():
         else:
             raise ValueError("No log available")
         
-    def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1, restart=False, normal=False):
+    def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1, restart=False):
         # steps is the number of timesteps, frequency is related to how much you log
         if self.log['positions'] == [] or restart:
-            states = self.integrator.get_inital_states(self.wrap, normal=normal)
+            states = self.integrator.get_inital_states(self.wrap)
         else:
             states = self.get_check_point()
+        
+        # WE CHECK THE BOND LENGTH DEVIATION HERE
+        # radii = states[1][-1]
+        # for replica in self.stacked_radii:
+        #     bond_lens = distance_pbc(self.stacked_radii[:, self.bonds[:, 0]], self.stacked_radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
+        # self.max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean().detach()
+        # self.stacked_vels = torch.cat(self.running_vels)
+
+
+        #END INSERTED CODE
 
         sim_epochs = int(steps//frequency)
         t = torch.Tensor([dt * i for i in range(frequency)]).to(self.device)
@@ -312,14 +322,12 @@ class NoseHoover(torch.nn.Module):
 
         return (accel, v,  (1/self.Q * (sys_ke - self.targetEkin)))
 
-    def get_inital_states(self, wrap=True, normal=False):
+    def get_inital_states(self, wrap=True):
         states = [
                 [system.get_velocities() for system in self.systems_arr], 
                 [system.get_positions() for system in self.systems_arr], 
                 [0.0 for i in range(len(self.systems_arr))]]
         states = [torch.Tensor(var).to(self.device) for var in states]
-        if normal:
-            states[1] = states[1] + torch.normal(torch.zeros_like(states[0]), 0)
         return states
         
 
