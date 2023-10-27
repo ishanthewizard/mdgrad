@@ -64,6 +64,26 @@ class System(Atoms):
     def set_temperature(self, T):
         from ase.md.velocitydistribution import MaxwellBoltzmannDistribution 
         MaxwellBoltzmannDistribution(self, T)
+        # Calculate the center of mass velocity
+        masses = self.get_masses()
+        positions = self.get_positions()
+        velocities = self.get_velocities()
+
+        # Calculate the total momentum
+        total_momentum = np.sum(velocities * masses[:, np.newaxis], axis=0)
+
+        # Calculate the total mass
+        total_mass = np.sum(masses)
+
+        # Calculate the center of mass velocity
+        com_velocity = total_momentum / total_mass
+
+        # Subtract the center of mass velocity from all particle velocities
+        velocities -= com_velocity
+
+        # Set the updated velocities in the system
+        self.set_velocities(velocities)
+
         if self.dim < 3:
             vel =  self.get_velocities()
             vel[:, -1] = 0.0

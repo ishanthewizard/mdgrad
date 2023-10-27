@@ -2,10 +2,13 @@ import torch
 from nff.utils.scatter import compute_grad
 import numpy as np 
 import math 
+import pdb
 from ase import units
+from ase.neighborlist import natural_cutoffs, NeighborList
 from torchmd.sovlers import odeint_adjoint, odeint
 from ase.geometry import wrap_positions
-
+import gsd
+from utils import distance_pbc
 '''
     Here contains object for simulation and computing the equation of state
 '''
@@ -26,13 +29,13 @@ class Simulations():
     """
     
     def __init__(self,
-                 system,
+                 systems_arr,
                   integrator,
                   wrap=True,
                   method="NH_verlet"):
 
-        self.system = system 
-        self.device = system.device
+        self.systems_arr = systems_arr 
+        self.device = systems_arr[0].device
         self.integrator = integrator
         self.solvemethod = method
         self.wrap = wrap
@@ -53,9 +56,9 @@ class Simulations():
 
     def update_states(self):
         if "positions" in self.log.keys():
-            self.system.set_positions(self.log['positions'][-1])
+            [system.set_positions(self.log['positions'][-1][i]) for i, system in enumerate(self.systems_arr)]
         if "velocities" in self.log.keys():
-            self.system.set_velocities(self.log['velocities'][-1])
+            [system.set_velocities(self.log['velocities'][-1][i]) for i, system in enumerate(self.systems_arr)]
 
     def get_check_point(self):
 
@@ -70,12 +73,22 @@ class Simulations():
         else:
             raise ValueError("No log available")
         
-    def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1):
-
-        if self.log['positions'] == []:
+    def simulate(self, steps=1, dt=1.0 * units.fs, frequency=1, restart=False):
+        # steps is the number of timesteps, frequency is related to how much you log
+        if self.log['positions'] == [] or restart:
             states = self.integrator.get_inital_states(self.wrap)
         else:
             states = self.get_check_point()
+        
+        # WE CHECK THE BOND LENGTH DEVIATION HERE
+        # radii = states[1][-1]
+        # for replica in self.stacked_radii:
+        #     bond_lens = distance_pbc(self.stacked_radii[:, self.bonds[:, 0]], self.stacked_radii[:, self.bonds[:, 1]], torch.FloatTensor([30., 30., 30.]).to(self.device))
+        # self.max_dev = (bond_lens - self.mean_bond_lens).abs().max(dim=-1)[0].mean().detach()
+        # self.stacked_vels = torch.cat(self.running_vels)
+
+
+        #END INSERTED CODE
 
         sim_epochs = int(steps//frequency)
         t = torch.Tensor([dt * i for i in range(frequency)]).to(self.device)
@@ -87,13 +100,24 @@ class Simulations():
             else:
                 for var in states:
                     var.requires_grad = True 
+                # The line below is where everything happens. The integrator is the one of the neural nets below 
+                # responsible for calculating dgmma/dt (f), and the solver (indicated to 
+                # ode int by the solvemethod string) applies this derivative in the forward step
+                # using something like runge kutta or velocity verlett.
                 trajs = odeint(self.integrator, tuple(states), t, method=self.solvemethod)
+
             self.update_log(trajs)
             self.update_states()
 
             states = self.get_check_point()
 
+
         return trajs
+    
+
+
+
+
 
 class NVE(torch.nn.Module):
 
@@ -209,7 +233,6 @@ class NoseHooverChain(torch.nn.Module):
         
     def forward(self, t, state):
         with torch.set_grad_enabled(True):        
-            
             v = state[0]
             q = state[1]
             p_v = state[2]
@@ -242,11 +265,75 @@ class NoseHooverChain(torch.nn.Module):
     def get_inital_states(self, wrap=True):
         states = [
                 self.system.get_velocities(), 
-                self.system.get_positions(wrap=wrap), 
+                self.system.get_positions(wrap=False), 
                 [0.0] * self.num_chains]
-
         states = [torch.Tensor(var).to(self.system.device) for var in states]
         return states
+
+
+
+class NoseHoover(torch.nn.Module):
+    def __init__(self, potentials, systems_arr, T, targetEkin, num_replicas=1, Q=1.0, adjoint=True,
+                topology_update_freq=1):
+        super().__init__()
+        self.model = potentials 
+        self.systems_arr = systems_arr
+        self.device = systems_arr[0].device # should just use system.device throughout
+        self.mass = torch.Tensor(self.systems_arr[0].get_masses()[None, :, None]).to(self.device)
+        self.T = T # in energy unit(eV)
+        self.N_dof = self.mass.shape[0] * systems_arr[0].dim
+        self.Q = Q
+        # self.Q = torch.Tensor([self.Q]).to(self.device)
+        self.dim = systems_arr[0].dim
+        self.adjoint = adjoint
+        self.state_keys = ['velocities', 'positions', 'baths']
+        self.topology_update_freq = topology_update_freq
+        self.update_count = 0
+        self.targetEkin = targetEkin
+
+    def update_topology(self, q):
+
+        if self.update_count % self.topology_update_freq == 0:
+            self.model._reset_topology(q)
+        self.update_count += 1
+
+
+    def update_T(self, T):
+        self.T = T 
+        
+    def forward(self, t, state):
+        with torch.set_grad_enabled(True):        
+            v = state[0]
+            q = state[1]
+            
+            if self.adjoint:
+                q.requires_grad = True
+            
+            p = v * self.mass
+
+            sys_ke = 0.5 * (p.pow(2) / self.mass).sum([1,2]) 
+
+            self.update_topology(q)           
+            
+            u = self.model(q)
+            f = -compute_grad(inputs=q, output=u.sum(-1))
+            accel = f / self.mass
+        a = (accel, v,  1/self.Q * (sys_ke - self.targetEkin))
+
+        return (accel, v,  (1/self.Q * (sys_ke - self.targetEkin)))
+
+    def get_inital_states(self, wrap=True):
+        states = [
+                [system.get_velocities() for system in self.systems_arr], 
+                [system.get_positions() for system in self.systems_arr], 
+                [0.0 for i in range(len(self.systems_arr))]]
+        states = [torch.Tensor(var).to(self.device) for var in states]
+        return states
+        
+
+
+
+
 
 
 class Isomerization(torch.nn.Module):

@@ -1,5 +1,6 @@
 """Summary
 """
+import pdb
 import torch
 import torchmd
 from nff.nn.layers import GaussianSmearing
@@ -60,7 +61,6 @@ class rdf(Observable):
         self.index_tuple = index_tuple
         
     def forward(self, xyz):
-
         nbr_list, pair_dis, _ = generate_nbr_list(xyz, 
                                                self.cutoff_boundary, 
                                                self.cell, 
@@ -71,9 +71,48 @@ class rdf(Observable):
         norm = count.sum()   # normalization factor for histogram 
         count = count / norm   # normalize 
         count = count
-        rdf =  count / (self.vol_bins / self.V )  
+        # rdf =  count / (self.vol_bins / self.V )  
+        rdf = count* 100 # I guess... lol
+        return count, self.bins, rdf
+    
+    # def forward(self,xyz):
+    #     result = None
+    #     for i in range(0,xyz.shape[0], 10):
+    #         running_dists =  self.radii_to_dists(xyz[i])
+    #         curr =self.forward2(running_dists)
+    #         if result == None:
+    #             result =  torch.zeros_like(curr)
+    #             result += curr
+    #     return 0, 0, result / (xyz.shape[0] //10)
 
-        return count, self.bins, rdf 
+    
+    # def radii_to_dists(self, radii):
+    #     #Get rij matrix
+    #     r = radii.unsqueeze(-3) - radii.unsqueeze(-2)
+        
+    #     # #Enforce minimum image convention
+    #     # r = -1*torch.where(r > 0.5*params.box, r-params.box, torch.where(r<-0.5*params.box, r+params.box, r))
+
+    #     #get rid of diagonal 0 entries of r matrix (for gradient stability)
+    #     r = r[~torch.eye(r.shape[1],dtype=bool)].reshape(r.shape[0], -1, 3)
+    #     try:
+    #         r.requires_grad = True
+    #     except RuntimeError:
+    #         pass
+
+    #     #compute distance matrix:
+    #     return torch.sqrt(torch.sum(r**2, axis=-1)).unsqueeze(-1)
+
+    # def forward2(self, running_dists):
+    #     # running_dists = torch.cat(running_dists)
+    #     mask = running_dists !=0
+    #     running_dists = running_dists[mask]
+    #     count = self.smear(running_dists.reshape(-1).squeeze()[..., None]).sum(0) 
+    #     norm = count.sum()   # normalization factor for histogram 
+    #     count = count / norm   # normalize 
+    #     # gr =  count / (self.vol_bins / self.V)  
+    #     # return gr #to match with MD17 RDF computation
+    #     return 100*count
 
 class Angles(Observable):
     def __init__(self, system, nbins, angle_range, cutoff=3.0,index_tuple=None, width=None):
@@ -91,7 +130,7 @@ class Angles(Observable):
             trainable=False
         ).to(self.device)
         self.width = (self.smear.width[0]).item()
-        self.cutoff = cutoff
+        self.cutoff = cutoff + 5e-1
         self.index_tuple = index_tuple
         
     def forward(self, xyz):

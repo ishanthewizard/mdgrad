@@ -1,0 +1,11 @@
+dataset:
+  src: /data/sanjeevr
+  name: md17
+  molecule: aspirin
+  size: 1k
+  
+  normalize_labels: False
+  checkpoint_epoch: 10 #which model to start from
+  model: schnet
+  model_dir: '/data/ishan-amin/MODELPATH/' #'/home/sanjeevr/MDsim/MODELPATH'
+  save_name: 'nnip-ift'
