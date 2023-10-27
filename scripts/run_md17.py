@@ -24,7 +24,7 @@ from lmdb_dataset import LmdbDataset
 import gsd.hoomd
 # optional. nglview for visualization
 # import nglview as nv
-MOLECULE = 'naphthalene'
+MOLECULE = 'benzene'
 SIZE = '1k'
 NAME = 'md17'
 SCHNET_PATH = f'/data/ishan-amin/MODELPATH/schnet/md17-{MOLECULE}_{SIZE}_schnet'
@@ -148,8 +148,8 @@ def fit_rdf(project_name, suggestion_id, device,):
     n_epochs = 100  # number of epochs to train for
     cutoff = 15 # cutoff for interatomic distances (I don't think this is used)
     nbins = 500 # bins for the rdf histogram
-    steps = 90
-    eq_steps = 10
+    steps = 270
+    eq_steps = 30
     tau = steps + eq_steps # this is the number of timesteps, idk why it's called tau
     
     start = 1e-6 # start of rdf range
@@ -391,4 +391,5 @@ def download_ovito(trajs, dt, bonds, atom_types_list, typeid, ovito_config, abso
             ovito_config.append(s)
 
 
-fit_rdf("adj_vs_implicit_final", "naphthalene_100tau", "cuda")
+fit_rdf("adj_vs_implicit_final", "benzene_300tau", "cuda")
+
